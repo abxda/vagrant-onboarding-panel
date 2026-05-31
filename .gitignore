@@ -1,0 +1,22 @@
+# Build output
+/build/bin/*.exe
+/build/bin/*.app
+/build/bin/*.dmg
+/build/bin/vagrant-onboarding-panel
+/build/bin/vagrant-onboarding-panel-*
+
+# Wails generated (kept out; regenerated on build)
+/frontend/wailsjs/
+
+# Local wizard state
+.vop_state.json
+
+# OS junk
+.DS_Store
+._*
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp

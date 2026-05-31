@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "vagrant-onboarding-panel",
+  "outputfilename": "vagrant-onboarding-panel",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "wailsjsdir": "./frontend",
+  "author": {
+    "name": "Dr. Abel Coronado"
+  },
+  "info": {
+    "companyName": "Big Data Lab",
+    "productName": "Panel de Onboarding (Vagrant)",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright (c) 2026 Dr. Abel Coronado",
+    "comments": "Plan B del laboratorio de Big Data: panel guiado para levantar el entorno via Vagrant + VirtualBox (caja abxda/big-data-lab)."
+  }
+}
