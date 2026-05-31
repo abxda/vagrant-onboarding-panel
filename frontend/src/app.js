@@ -15,6 +15,7 @@ const ICONS = {
     shield:   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>',
     lock:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
     trash:    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+    copy:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
 };
 function icon(name) { return ICONS[name] || ICONS.info; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -154,6 +155,7 @@ function renderStep() {
         <div class="c-console">
             <div class="c-console__toolbar">
                 <span class="c-console__title">Registro en vivo</span>
+                <button class="c-btn c-btn--primary" id="btnCopyLog">${icon('copy')} Copiar consola</button>
                 <button class="c-btn" id="btnClearLog">${icon('trash')} Limpiar</button>
             </div>
             <pre class="c-console__pane" id="logPane"></pre>
@@ -187,6 +189,61 @@ function renderStep() {
         await window.go.main.App.ClearLog();
         document.getElementById('logPane').innerHTML = '';
     });
+    document.getElementById('btnCopyLog').addEventListener('click', copyConsole);
+}
+
+// copyConsole copies the FULL log buffer (not just what's visible) to the
+// clipboard, prefixed with a context header so that when a student pastes it
+// to the teacher, the OS/arch/version and the active step come with it.
+async function copyConsole() {
+    const snap = await window.go.main.App.GetLogSnapshot();
+    const s = STEPS[CURRENT] || {};
+    const header = [
+        '===== Panel de Onboarding · reporte del alumno =====',
+        `Sistema: ${ENV.os || '?'}/${ENV.arch || '?'}  ·  Panel v${ENV.appVersion || '?'}`,
+        `Elevación: ${ENV.mechanism || '?'}`,
+        `Paso actual: ${s.index || '?'} · ${s.title || '?'} (estado: ${s.status || '?'})`,
+        '===================================================',
+        '',
+    ].join('\n');
+    const body = snap.map(l => `${l.time}  ${(l.level || 'INFO').padEnd(5)}  ${l.text}`).join('\n');
+    const ok = await copyText(header + body);
+    const btn = document.getElementById('btnCopyLog');
+    if (btn) {
+        const orig = btn.innerHTML;
+        btn.innerHTML = `${icon('check')} ${ok ? '¡Copiado! Pégalo en tu mensaje' : 'No se pudo copiar'}`;
+        setTimeout(() => { btn.innerHTML = orig; }, 2200);
+    }
+}
+
+// copyText tries the modern clipboard API, then the Wails runtime, then a
+// hidden-textarea fallback — so it works across WebView2 / WKWebView / WebKitGTK.
+async function copyText(text) {
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (e) { /* fall through */ }
+    try {
+        if (window.runtime && window.runtime.ClipboardSetText) {
+            await window.runtime.ClipboardSetText(text);
+            return true;
+        }
+    } catch (e) { /* fall through */ }
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+    } catch (e) {
+        return false;
+    }
 }
 
 async function runStep(s) {
