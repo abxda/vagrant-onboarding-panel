@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abxda/vagrant-onboarding-panel/internal/diagnose"
 	"github.com/abxda/vagrant-onboarding-panel/internal/elevate"
 	"github.com/abxda/vagrant-onboarding-panel/internal/logsink"
 	"github.com/abxda/vagrant-onboarding-panel/internal/state"
@@ -143,9 +144,47 @@ func (a *App) TestElevation() ActionResult {
 	return ActionResult{OK: false, Message: "El comando corrió pero sin privilegios elevados.", Detail: strings.TrimSpace(res.Stdout)}
 }
 
-// CheckStep re-checks a step's status. CP1: mocked — diagnostico and later
-// steps return their persisted value or a stub. Real detection arrives in CP2+.
+// GetDiagnostics runs the read-only system diagnostic and returns the full
+// report (also streamed to the log). Bound for the frontend to render the
+// probe table in the Diagnóstico step.
+func (a *App) GetDiagnostics() diagnose.Report {
+	a.sink.Emit("INFO", strings.Repeat("─", 56))
+	a.sink.Emit("INFO", "Diagnóstico del sistema (solo lectura)…")
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+	rep := diagnose.Run(ctx)
+	for _, p := range rep.Probes {
+		lvl := "INFO"
+		if p.Level == diagnose.Warn {
+			lvl = "WARN"
+		} else if p.Level == diagnose.Error {
+			lvl = "ERROR"
+		}
+		a.sink.Emit(lvl, fmt.Sprintf("%s: %s", p.Label, p.Value))
+		if p.Advice != "" && p.Level != diagnose.OK {
+			a.sink.Emit(lvl, "  → "+p.Advice)
+		}
+	}
+	// Persist the step status from the overall verdict.
+	st := string(wizard.StatusOK)
+	switch rep.Overall {
+	case diagnose.Warn:
+		st = string(wizard.StatusWarn)
+	case diagnose.Error:
+		st = string(wizard.StatusError)
+	}
+	a.state.SetStatus(string(wizard.StepDiagnostico), st)
+	a.emitStepStatus(string(wizard.StepDiagnostico), st)
+	return rep
+}
+
+// CheckStep re-checks a step's status. The diagnostico step runs the real
+// diagnostic; later steps return their persisted value (real detection for
+// those arrives in CP3+).
 func (a *App) CheckStep(stepID string) string {
+	if stepID == string(wizard.StepDiagnostico) {
+		return string(a.GetDiagnostics().Overall) // ok|warn|error align with wizard.Status*
+	}
 	a.sink.Emit("INFO", "Verificando paso: "+stepID+" (verificación real llega en el siguiente checkpoint)")
 	st := a.state.Status(stepID)
 	if st == "" {
@@ -159,6 +198,20 @@ func (a *App) CheckStep(stepID string) string {
 // exercised end-to-end (the wrapped command is a harmless probe for now).
 func (a *App) RunStep(stepID string) ActionResult {
 	id := wizard.StepID(stepID)
+
+	// Step 1 is the real read-only diagnostic — no mock, no elevation.
+	if id == wizard.StepDiagnostico {
+		rep := a.GetDiagnostics()
+		switch rep.Overall {
+		case diagnose.Error:
+			return ActionResult{OK: false, Message: "El diagnóstico encontró un bloqueo. Revisa los puntos en rojo antes de continuar."}
+		case diagnose.Warn:
+			return ActionResult{OK: true, Message: "Diagnóstico con avisos. Puedes continuar, pero revisa los puntos en amarillo."}
+		default:
+			return ActionResult{OK: true, Message: "Diagnóstico OK. Tu equipo está listo para virtualizar."}
+		}
+	}
+
 	a.sink.Emit("INFO", strings.Repeat("─", 56))
 	a.sink.Emit("INFO", "Ejecutando paso: "+stepID)
 	a.state.SetStatus(stepID, string(wizard.StatusRunning))

@@ -254,3 +254,26 @@ svg { width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
     border-radius: 50%; animation: c-spin 0.8s linear infinite; display: inline-block;
 }
 @keyframes c-spin { to { transform: rotate(360deg); } }
+
+/* Diagnostic probe rows */
+.c-diag { margin-top: var(--s-4); display: flex; flex-direction: column; gap: var(--s-2); }
+.c-diag__row {
+    border: 1px solid var(--color-border);
+    border-left-width: 3px;
+    border-radius: var(--radius-md);
+    padding: var(--s-3) var(--s-4);
+    background: var(--color-surface);
+}
+.c-diag__row--ok     { border-left-color: var(--color-success); }
+.c-diag__row--warn   { border-left-color: var(--color-warn);   background: #fffbeb; }
+.c-diag__row--danger { border-left-color: var(--color-danger); background: #fef2f2; }
+.c-diag__head { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.c-diag__label { font-weight: 600; }
+.c-diag__value { color: var(--color-text-muted); font-family: var(--font-mono); font-size: var(--fs-xs); margin-left: auto; }
+.c-diag__advice {
+    margin-top: var(--s-2); padding-top: var(--s-2);
+    border-top: 1px dashed var(--color-border);
+    font-size: var(--fs-sm); color: var(--color-text); line-height: 1.55;
+    display: flex; gap: var(--s-2); align-items: flex-start;
+}
+.c-diag__advice svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 2px; color: var(--color-info); }

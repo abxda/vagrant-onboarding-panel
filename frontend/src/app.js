@@ -147,6 +147,7 @@ function renderStep() {
                 <button class="c-btn" id="btnCheck" ${running ? 'disabled' : ''}>${icon('refresh')} Verificar estado</button>
             </div>
             <div id="stepResult"></div>
+            <div id="diagProbes"></div>
         </div>
 
         <div class="c-console">
@@ -170,6 +171,13 @@ function renderStep() {
 
     document.getElementById('btnRun').addEventListener('click', () => runStep(s));
     document.getElementById('btnCheck').addEventListener('click', () => checkStep(s));
+
+    // The diagnostic step renders a probe table; run it automatically the
+    // first time it's viewed if it hasn't been checked yet.
+    if (s.id === 'diagnostico') {
+        if (s.status === 'unknown' || s.status === 'running') runDiagnostics();
+        else if (LAST_DIAG) renderDiagnostics(LAST_DIAG);
+    }
     document.getElementById('btnClearLog').addEventListener('click', async () => {
         await window.go.main.App.ClearLog();
         document.getElementById('logPane').innerHTML = '';
@@ -178,10 +186,50 @@ function renderStep() {
 
 async function runStep(s) {
     setResult('', '');
+    if (s.id === 'diagnostico') { await runDiagnostics(); return; }
     const res = await window.go.main.App.RunStep(s.id);
     showActionResult(res);
     STEPS = await window.go.main.App.GetSteps();
     renderNav();
+}
+
+let LAST_DIAG = null;
+async function runDiagnostics() {
+    const btn = document.getElementById('btnRun');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="c-spinner-sm"></span> Diagnosticando…'; }
+    try {
+        const rep = await window.go.main.App.GetDiagnostics();
+        LAST_DIAG = rep;
+        renderDiagnostics(rep);
+        const s = STEPS.find(x => x.id === 'diagnostico');
+        if (s) s.status = rep.overall;
+        renderNav();
+        if (rep.overall === 'ok') setResult('ok', `${icon('check')} Diagnóstico OK. Tu equipo está listo para virtualizar.`);
+        else if (rep.overall === 'warn') setResult('warn', `${icon('alert')} Diagnóstico con avisos. Puedes continuar, pero revisa los puntos en amarillo.`);
+        else setResult('err', `${icon('alert')} El diagnóstico encontró un bloqueo. Revisa los puntos en rojo antes de continuar.`);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('play')} Ejecutar diagnóstico`; }
+    }
+}
+
+function renderDiagnostics(rep) {
+    const host = document.getElementById('diagProbes');
+    if (!host || !rep) return;
+    const rows = (rep.probes || []).map(p => {
+        const badge = p.level === 'ok' ? 'ok' : p.level === 'warn' ? 'warn' : 'danger';
+        const bicon = p.level === 'ok' ? 'check' : 'alert';
+        const advice = (p.advice && p.level !== 'ok')
+            ? `<div class="c-diag__advice">${icon('info')} ${esc(p.advice)}</div>` : '';
+        return `<div class="c-diag__row c-diag__row--${badge}">
+            <div class="c-diag__head">
+                <span class="c-badge c-badge--${badge}">${icon(bicon)} ${p.level.toUpperCase()}</span>
+                <span class="c-diag__label">${esc(p.label)}</span>
+                <span class="c-diag__value">${esc(p.value)}</span>
+            </div>
+            ${advice}
+        </div>`;
+    }).join('');
+    host.innerHTML = `<div class="c-diag">${rows}</div>`;
 }
 
 async function checkStep(s) {
