@@ -147,6 +147,7 @@ function renderStep() {
                 <button class="c-btn" id="btnCheck" ${running ? 'disabled' : ''}>${icon('refresh')} Verificar estado</button>
             </div>
             <div id="stepResult"></div>
+            <div id="toolStatus"></div>
             <div id="diagProbes"></div>
         </div>
 
@@ -178,6 +179,10 @@ function renderStep() {
         if (s.status === 'unknown' || s.status === 'running') runDiagnostics();
         else if (LAST_DIAG) renderDiagnostics(LAST_DIAG);
     }
+    // Install steps auto-detect whether the tool is already present.
+    if (s.id === 'virtualbox' || s.id === 'vagrant') {
+        refreshToolStatus(s.id);
+    }
     document.getElementById('btnClearLog').addEventListener('click', async () => {
         await window.go.main.App.ClearLog();
         document.getElementById('logPane').innerHTML = '';
@@ -187,10 +192,37 @@ function renderStep() {
 async function runStep(s) {
     setResult('', '');
     if (s.id === 'diagnostico') { await runDiagnostics(); return; }
-    const res = await window.go.main.App.RunStep(s.id);
-    showActionResult(res);
-    STEPS = await window.go.main.App.GetSteps();
-    renderNav();
+    const btn = document.getElementById('btnRun');
+    if (btn) { btn.disabled = true; btn.innerHTML = `<span class="c-spinner-sm"></span> ${esc(s.actionLabel)}…`; }
+    try {
+        const res = await window.go.main.App.RunStep(s.id);
+        showActionResult(res);
+        STEPS = await window.go.main.App.GetSteps();
+        renderNav();
+        if (s.id === 'virtualbox' || s.id === 'vagrant') await refreshToolStatus(s.id);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('play')} ${esc(s.actionLabel)}`; }
+    }
+}
+
+async function refreshToolStatus(stepId) {
+    const ts = await window.go.main.App.GetToolStatus(stepId);
+    renderToolStatus(ts);
+    const s = STEPS.find(x => x.id === stepId);
+    if (s) { s.status = ts.installed ? 'ok' : (s.status === 'error' ? 'error' : s.status); renderNav(); }
+}
+
+function renderToolStatus(ts) {
+    const host = document.getElementById('toolStatus');
+    if (!host || !ts) return;
+    if (ts.installed) {
+        host.innerHTML = `<div class="c-result c-result--ok">${icon('check')} Ya instalado — versión ${esc(ts.version)} <span style="opacity:.7;margin-left:6px">${esc(ts.path)}</span></div>`;
+    } else {
+        const pm = ts.pkgAvailable
+            ? `Se instalará con <code>${esc(ts.pkgManager)}</code> (requiere aprobar el diálogo de administrador).`
+            : `No encontré un gestor de paquetes; tendrás que instalarlo manualmente desde el sitio oficial.`;
+        host.innerHTML = `<div class="c-result c-result--warn">${icon('alert')} No instalado. ${pm}</div>`;
+    }
 }
 
 let LAST_DIAG = null;
