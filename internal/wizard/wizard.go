@@ -48,7 +48,7 @@ func Steps() []Step {
 			ID:             StepDiagnostico,
 			Index:          1,
 			Title:          "Diagnóstico del sistema",
-			Why:            "Antes de instalar nada, comprobamos que tu equipo puede correr máquinas virtuales: que la virtualización por hardware (VT-x/AMD-V) esté activa, que haya RAM y disco suficientes, y que no haya un hipervisor en conflicto (Hyper-V, WSL2, Integridad de memoria) que vuelva lenta o imposible a VirtualBox. Es un paso de solo lectura: no cambia nada en tu equipo.",
+			Why:            "Antes de instalar nada, comprobamos que tu equipo puede correr máquinas virtuales: virtualización por hardware (VT-x/AMD-V), RAM y disco suficientes, y si Windows tiene activo su hipervisor de seguridad (Hyper-V / VBS / Integridad de memoria). Importante: si está activo, NO lo desactivamos ni tocamos tu seguridad — VirtualBox correrá por encima de él en modo compatibilidad (un poco más lento, con un ícono de tortuga: es normal). Este paso es de SOLO LECTURA: no cambia absolutamente nada en tu equipo.",
 			NeedsElevation: false,
 			ActionLabel:    "Ejecutar diagnóstico",
 		},

@@ -84,12 +84,17 @@ func virtProbe(hyperPresent bool) Probe {
 
 func hypervisorProbe(hyperPresent bool) Probe {
 	if !hyperPresent {
-		return Probe{Key: "hypervisor", Label: "Conflicto de hipervisor (Hyper-V / VBS)", Level: OK,
-			Value: "Sin hipervisor activo"}
+		return Probe{Key: "hypervisor", Label: "Hipervisor de Windows (Hyper-V / VBS)", Level: OK,
+			Value: "Sin hipervisor activo · VirtualBox correrá a máxima velocidad"}
 	}
-	return Probe{Key: "hypervisor", Label: "Conflicto de hipervisor (Hyper-V / VBS)", Level: Warn,
-		Value: "Hay un hipervisor activo (Hyper-V, WSL2 o Seguridad basada en virtualización)",
-		Advice: "Un hipervisor de Windows tiene tomado VT-x, lo que hace que VirtualBox vaya muy lento (ícono de tortuga) o falle. Para liberarlo: 1) ejecuta como administrador  bcdedit /set hypervisorlaunchtype off  2) desactiva 'Integridad de memoria' en Seguridad de Windows  3) en 'Activar o desactivar características de Windows' desmarca Hyper-V y 'Plataforma de hipervisor de Windows'  4) reinicia en frío (apagar y encender)."}
+	// Strategy chosen for students: COEXIST with the Windows hypervisor. We do
+	// NOT disable anything. VirtualBox 7 detects an active hypervisor and runs
+	// on top of it (Hyper-V backend), shown by a green turtle icon. The VM
+	// works — just slower. This message reassures rather than alarms, and never
+	// touches the student's security configuration.
+	return Probe{Key: "hypervisor", Label: "Hipervisor de Windows (Hyper-V / VBS)", Level: Warn,
+		Value: "Activo · VirtualBox funcionará en modo compatibilidad (más lento)",
+		Advice: "Tu Windows tiene activada la seguridad por virtualización (VBS / Integridad de memoria). Es NORMAL en Windows 11 y NO lo vamos a desactivar: respetamos tu equipo y tu seguridad. VirtualBox 7 corre por encima del hipervisor de Windows; verás un ícono de tortuga verde en la VM — es esperado, no es un error. La máquina virtual funciona igual, solo un poco más lenta. (Opcional y avanzado: si más adelante quisieras máxima velocidad, existe la vía de desactivar el hipervisor, pero requiere reiniciar y reduce temporalmente la seguridad; por eso NO es el camino por defecto.)"}
 }
 
 // memoryIntegrityProbe reads the Core Isolation > Memory Integrity setting,
@@ -111,9 +116,9 @@ func memoryIntegrityProbe() Probe {
 			Value: "No configurada"}
 	}
 	if enabled == 1 {
-		return Probe{Key: "memory_integrity", Label: "Integridad de memoria (Core Isolation)", Level: Warn,
-			Value: "Activada",
-			Advice: "La 'Integridad de memoria' activa la virtualización de Windows (VBS), que compite con VirtualBox. Desactívala en Seguridad de Windows → Seguridad del dispositivo → Aislamiento del núcleo → Integridad de memoria, y reinicia."}
+		return Probe{Key: "memory_integrity", Label: "Integridad de memoria (Core Isolation)", Level: OK,
+			Value: "Activada · la dejamos como está",
+			Advice: "Tienes la 'Integridad de memoria' activada (es una buena protección). No la tocamos: VirtualBox funcionará sobre ella en modo compatibilidad. Solo te informamos para que sepas por qué la VM puede ir un poco más lenta."}
 	}
 	return Probe{Key: "memory_integrity", Label: "Integridad de memoria (Core Isolation)", Level: OK,
 		Value: "Desactivada"}

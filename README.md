@@ -49,7 +49,7 @@ Provider de virtualización: **siempre VirtualBox**.
 | `python mapper.py` en Debian 11 | ⚠️ requiere ajuste | Debian 11 no trae el symlink `python`, solo `python3`. El ejercicio usa `python3` explícito. |
 | Kafka 4.0 KRaft | ✅ | Requiere JDK 17 (ok en la caja). Usa `--bootstrap-server`, no `--zookeeper`. |
 | Elasticsearch 8.14 | ✅ | Seguridad ON por defecto (HTTPS + password autogenerada). |
-| VirtualBox en Windows 11 | ⚠️ host-dependiente | Conflicto con Hyper-V / Integridad de memoria. El paso de Diagnóstico lo detecta y da instrucciones. |
+| VirtualBox en Windows 11 con Hyper-V/VBS | ✅ convive | Estrategia elegida: NO desactivamos el hipervisor ni la seguridad del alumno. VirtualBox 7 corre sobre Hyper-V (modo compatibilidad, ícono de tortuga, más lento pero funcional). El Diagnóstico lo detecta e informa sin alarmar. Respetuoso con equipos administrados/corporativos donde `bcdedit` está bloqueado. |
 | macOS Intel: kext de VirtualBox | ⚠️ manual | La aprobación de la extensión de kernel NO se automatiza; el panel da instrucciones visuales. |
 | Apple Silicon | ❌ fuera de alcance | VirtualBox + esta caja amd64 no aplican. |
 
