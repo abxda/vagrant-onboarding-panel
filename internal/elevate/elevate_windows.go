@@ -83,7 +83,7 @@ func runElevated(ctx context.Context, r Request) (Result, error) {
 			return Result{ExitCode: -1, Cancelled: true}, nil
 		}
 		// Some Windows builds surface the cancel via GetLastError instead.
-		if le := windows.GetLastError(); le == errorCancelled {
+		if errno, ok := windows.GetLastError().(windows.Errno); ok && uint32(errno) == errorCancelled {
 			return Result{ExitCode: -1, Cancelled: true}, nil
 		}
 		return Result{ExitCode: -1}, fmt.Errorf("ShellExecuteEx falló: %v", callErr)
