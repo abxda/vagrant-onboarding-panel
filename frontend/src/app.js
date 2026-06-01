@@ -27,7 +27,8 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '
 
 /* ---------- state -------------------------------------------------------- */
 let STEPS = [];
-let CURRENT = 0;          // index of selected step
+let CURRENT = 0;          // index of selected step (in PREPARACIÓN)
+let MODE = 'prep';        // 'prep' = Preparación (despliegue) | 'lab' = Mi Laboratorio (trabajo)
 let ENV = {};
 const STATUS_BADGE = {
     ok:      { cls: 'ok',     icon: 'check', label: 'Listo' },
@@ -43,8 +44,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     ENV = await window.go.main.App.GetEnvInfo();
     STEPS = await window.go.main.App.GetSteps();
     renderFooter();
+    // Si la preparación ya está completa, entrar directo a Mi Laboratorio.
+    const prep = STEPS.filter(isPrepStep);
+    const prepDone = prep.length && prep.every(s => s.status === 'ok' || s.status === 'warn');
+    MODE = prepDone ? 'lab' : 'prep';
     renderNav();
-    renderStep();
+    if (MODE === 'lab') renderLab(); else renderStep();
     wireEvents();
     // initial log paint
     const snap = await window.go.main.App.GetLogSnapshot();
@@ -66,13 +71,12 @@ function wireEvents() {
     window.runtime.EventsOn('exercise:progress', (p) => {
         EX_PROGRESS = (p && p.current > 0) ? p : null;
         renderStatusStrip();
-        // When the exercise finishes, refresh service dots promptly.
         if (!EX_PROGRESS) refreshDashboard();
     });
     window.runtime.EventsOn('services:update', (svc) => {
         LAST_DASH.services = svc || LAST_DASH.services;
         renderStatusStrip();
-        if (STEPS[CURRENT] && STEPS[CURRENT].id === 'servidores') renderExercise();
+        if (MODE === 'lab' && LAB_TAB === 'servicios') renderLabServicios();
     });
 }
 
@@ -83,18 +87,27 @@ function progressPct() {
     return Math.round((done / STEPS.length) * 100);
 }
 
-/* ---------- sidebar stepper --------------------------------------------- */
+/* ---------- sidebar: dos capas (Preparación / Mi Laboratorio) ------------ */
+// El paso 'servidores' deja de ser el "paso 6" y se convierte en la puerta a
+// MI LABORATORIO (capa de trabajo, idéntica entre ediciones). Los pasos
+// previos son PREPARACIÓN (capa de despliegue, propia de Vagrant).
+const LAB_STEP_ID = 'servidores';
+function isPrepStep(s) { return s.id !== LAB_STEP_ID; }
+
 function renderNav() {
     const nav = document.getElementById('stepNav');
-    // A step is unlocked if it's the first, or the previous one is ok.
-    nav.innerHTML = STEPS.map((s, i) => {
+    const prep = STEPS.filter(isPrepStep);
+    const prepDone = prep.length && prep.every(s => s.status === 'ok' || s.status === 'warn');
+
+    const stepBtn = (s) => {
+        const i = STEPS.indexOf(s);
         const st = s.status || 'unknown';
         const numCls = st === 'ok' ? 'c-step-nav__num--ok'
             : st === 'warn' ? 'c-step-nav__num--warn'
             : st === 'error' ? 'c-step-nav__num--error'
             : st === 'running' ? 'c-step-nav__num--running' : '';
-        const numInner = st === 'ok' ? icon('check') : (i + 1);
-        const active = i === CURRENT ? ' is-active' : '';
+        const numInner = st === 'ok' ? icon('check') : (prep.indexOf(s) + 1);
+        const active = (i === CURRENT && MODE === 'prep') ? ' is-active' : '';
         const sub = STATUS_BADGE[st] ? STATUS_BADGE[st].label : '';
         return `<button class="c-step-nav${active}" data-idx="${i}">
             <span class="c-step-nav__num ${numCls}">${numInner}</span>
@@ -103,10 +116,29 @@ function renderNav() {
                 <span class="c-step-nav__sub">${esc(sub)}</span>
             </span>
         </button>`;
-    }).join('');
+    };
+
+    const labActive = MODE === 'lab' ? ' is-active' : '';
+    const labLocked = !prepDone;
+    nav.innerHTML =
+        `<div class="c-navgroup">Preparación</div>` +
+        prep.map(stepBtn).join('') +
+        `<div class="c-navgroup">Mi laboratorio</div>` +
+        `<button class="c-step-nav c-step-nav--lab${labActive}" id="navLab" ${labLocked ? 'disabled title="Completa la preparación primero"' : ''}>
+            <span class="c-step-nav__num ${prepDone ? 'c-step-nav__num--ok' : ''}">${icon('server')}</span>
+            <span class="c-step-nav__body">
+                <span class="c-step-nav__title">Mi laboratorio</span>
+                <span class="c-step-nav__sub">${labLocked ? 'Completa la preparación' : 'Servicios · Ejercicios · HDFS'}</span>
+            </span>
+        </button>`;
+
     nav.querySelectorAll('button[data-idx]').forEach(b => {
-        b.addEventListener('click', () => { CURRENT = parseInt(b.dataset.idx, 10); renderNav(); renderStep(); });
+        b.addEventListener('click', () => { MODE = 'prep'; CURRENT = parseInt(b.dataset.idx, 10); renderNav(); renderStep(); });
     });
+    const navLab = document.getElementById('navLab');
+    if (navLab && !labLocked) {
+        navLab.addEventListener('click', () => { MODE = 'lab'; renderNav(); renderLab(); });
+    }
 }
 
 /* ---------- header actions ---------------------------------------------- */
@@ -211,16 +243,60 @@ function renderStep() {
     if (s.id === 'virtualbox' || s.id === 'vagrant') {
         refreshToolStatus(s.id);
     }
-    // The services step shows the step-by-step exercise (homologado con el portable).
-    if (s.id === 'servidores') {
-        renderExercise();
-        refreshDashboard().then(renderExercise); // refresca el estado real al entrar
-    }
     document.getElementById('btnClearLog').addEventListener('click', async () => {
         await window.go.main.App.ClearLog();
         document.getElementById('logPane').innerHTML = '';
     });
     document.getElementById('btnCopyLog').addEventListener('click', copyConsole);
+}
+
+/* ---------- MI LABORATORIO (capa de trabajo, idéntica entre ediciones) ---- */
+// Sub-secciones del laboratorio. La UI aquí es homóloga al portable: el alumno
+// no ve "vagrant", solo su espacio de trabajo (servicios, ejercicio, HDFS).
+let LAB_TAB = 'servicios';
+function renderLab() {
+    renderHeaderActions();
+    document.getElementById('viewTitle').textContent = 'Mi laboratorio';
+
+    const tabs = [
+        { id: 'servicios',  label: 'Servicios',  icon: 'server' },
+        { id: 'ejercicios', label: 'Ejercicios', icon: 'book' },
+        { id: 'hdfs',       label: 'HDFS',       icon: 'folder' },
+    ];
+    const subtabs = tabs.map(t =>
+        `<button class="c-subtab${LAB_TAB === t.id ? ' is-active' : ''}" data-labtab="${t.id}">${icon(t.icon)} ${t.label}</button>`
+    ).join('');
+
+    const content = document.getElementById('content');
+    content.innerHTML = `
+        <div class="c-card" style="padding:0;overflow:hidden">
+            <div class="c-subtabs">${subtabs}</div>
+            <div id="labBody" style="padding:var(--s-5)"></div>
+        </div>
+        <div class="c-console">
+            <div class="c-console__toolbar">
+                <span class="c-console__title">Registro en vivo</span>
+                <button class="c-btn c-btn--primary" id="btnCopyLog">${icon('copy')} Copiar consola</button>
+                <button class="c-btn" id="btnClearLog">${icon('trash')} Limpiar</button>
+            </div>
+            <pre class="c-console__pane" id="logPane"></pre>
+        </div>`;
+
+    content.querySelectorAll('button[data-labtab]').forEach(b => {
+        b.addEventListener('click', () => { LAB_TAB = b.dataset.labtab; renderLab(); });
+    });
+    document.getElementById('btnClearLog').addEventListener('click', async () => {
+        await window.go.main.App.ClearLog();
+        document.getElementById('logPane').innerHTML = '';
+    });
+    document.getElementById('btnCopyLog').addEventListener('click', copyConsole);
+    window.go.main.App.GetLogSnapshot().then(snap => snap.forEach(appendLog));
+
+    // Render the active sub-tab into #labBody.
+    if (LAB_TAB === 'servicios')  renderLabServicios();
+    else if (LAB_TAB === 'ejercicios') renderLabEjercicios();
+    else if (LAB_TAB === 'hdfs')  renderLabHdfs();
+    refreshDashboard();
 }
 
 // copyConsole copies the FULL log buffer (not just what's visible) to the
@@ -473,20 +549,22 @@ function stepActionLabel(s) {
     return s.actionLabel;
 }
 
-/* ---------- Ejercicio paso a paso (Paso 6, homologado con el portable) ----- */
+/* ---------- Mi Laboratorio: estado del ejercicio ------------------------- */
 let EX_STEPS = [];
-async function renderExercise() {
-    const host = document.getElementById('exerciseBox');
-    if (!host) return;
-    if (!EX_STEPS.length) {
-        try { EX_STEPS = await window.go.main.App.GetExerciseSteps(); }
-        catch (e) { host.innerHTML = `<div class="c-alert c-alert--warn">${icon('alert')} No pude cargar el ejercicio. Reinicia el panel.</div>`; return; }
-    }
+// Repinta la sub-pestaña activa del laboratorio si estamos en modo lab.
+function refreshLabActive() {
+    if (MODE !== 'lab') return;
+    if (LAB_TAB === 'servicios')  renderLabServicios();
+    else if (LAB_TAB === 'ejercicios') renderLabEjercicios();
+    else if (LAB_TAB === 'hdfs')  renderLabHdfs();
+}
 
+/* === Lab · Servicios ===================================================== */
+function renderLabServicios() {
+    const host = document.getElementById('labBody');
+    if (!host) return;
     const vmRunning = LAST_DASH.vmState === 'running';
     const svc = LAST_DASH.services || {};
-
-    // Panel de CONTROL de servicios — el alumno enciende/apaga todo desde aquí.
     const svcChip = (on, label) => {
         const cls = vmRunning && on ? 'ok' : 'muted';
         const txt = vmRunning && on ? 'activo' : (vmRunning ? 'apagado' : '—');
@@ -494,8 +572,8 @@ async function renderExercise() {
     };
     const allUp = vmRunning && svc.hdfs && svc.kafka && svc.elastic && svc.jupyter;
     const someUp = vmRunning && (svc.hdfs || svc.kafka || svc.elastic || svc.jupyter);
-    const statusPanel = `
-        <div class="c-svcpanel">
+    host.innerHTML = `
+        <div class="c-svcpanel" style="margin:0">
             <div class="c-svcpanel__actionbar">
                 <button class="c-btn c-btn--primary c-btn--lg" id="svcStartAll" ${vmRunning ? '' : 'disabled'}>${icon('play')} Levantar todos los servicios</button>
                 <button class="c-btn c-btn--lg" id="svcStopAll" ${someUp ? '' : 'disabled'}>${icon('stop')} Detener todos</button>
@@ -503,9 +581,9 @@ async function renderExercise() {
                 <button class="c-btn c-btn--sm" id="exRefreshSvc">${icon('refresh')} Actualizar</button>
             </div>
             <div class="c-svcpanel__hint">${
-                !vmRunning ? `${icon('alert')} La máquina virtual no está encendida. Vuelve al paso 5 y pulsa "Levantar VM".`
-                : allUp ? `${icon('check')} Todos los servicios están <b>activos</b>. La VM los mantiene corriendo aunque cierres el panel.`
-                : someUp ? `${icon('info')} Algunos servicios están apagados (en gris abajo). Pulsa <b>"Levantar todos los servicios"</b> — enciende los que faltan sin reiniciar los que ya corren.`
+                !vmRunning ? `${icon('alert')} La máquina virtual no está encendida. Vuelve a Preparación y completa "Levantar VM".`
+                : allUp ? `${icon('check')} Todos los servicios están <b>activos</b>. Se mantienen corriendo aunque cierres el panel.`
+                : someUp ? `${icon('info')} Algunos servicios están apagados (en gris). Pulsa <b>"Levantar todos los servicios"</b> — enciende los que faltan sin reiniciar los que ya corren.`
                 : `${icon('info')} Los servicios están apagados. Pulsa <b>"Levantar todos los servicios"</b> para encenderlos.`
             }</div>
             <div class="c-svcpanel__grid">
@@ -515,7 +593,33 @@ async function renderExercise() {
                 ${svcChip(svc.jupyter, 'Jupyter')}
             </div>
         </div>`;
+    document.getElementById('exRefreshSvc').addEventListener('click', async () => { await refreshDashboard(); renderLabServicios(); });
+    document.getElementById('svcStartAll').addEventListener('click', async (e) => {
+        const b = e.currentTarget;
+        b.disabled = true; b.innerHTML = '<span class="c-spinner-sm"></span> Levantando servicios… (~30s)';
+        const res = await window.go.main.App.StartAllServices();
+        if (!res.ok) alert(res.message || 'No se pudieron levantar los servicios.');
+        await refreshDashboard(); renderLabServicios();
+    });
+    document.getElementById('svcStopAll').addEventListener('click', async (e) => {
+        if (!confirm('¿Detener todos los servicios dentro de la VM? El ejercicio dejará de funcionar hasta que los vuelvas a levantar. La VM seguirá encendida.')) return;
+        const b = e.currentTarget;
+        b.disabled = true; b.innerHTML = '<span class="c-spinner-sm"></span> Deteniendo…';
+        const res = await window.go.main.App.StopAllServices();
+        if (!res.ok) alert(res.message || 'No se pudieron detener los servicios.');
+        await refreshDashboard(); renderLabServicios();
+    });
+}
 
+/* === Lab · Ejercicios ==================================================== */
+async function renderLabEjercicios() {
+    const host = document.getElementById('labBody');
+    if (!host) return;
+    if (!EX_STEPS.length) {
+        try { EX_STEPS = await window.go.main.App.GetExerciseSteps(); }
+        catch (e) { host.innerHTML = `<div class="c-alert c-alert--warn">${icon('alert')} No pude cargar el ejercicio.</div>`; return; }
+    }
+    const vmRunning = LAST_DASH.vmState === 'running';
     const rows = EX_STEPS.map((s, i) => `
         <div class="c-ex-step" id="exstep-${i}">
             <div class="c-ex-step__head">
@@ -526,62 +630,67 @@ async function renderExercise() {
             <div class="c-ex-step__notes">${esc(s.notes)}</div>
             <pre class="c-ex-step__cmd">${esc(s.cmd)}</pre>
         </div>`).join('');
-
-    host.innerHTML = statusPanel + `
-        <div class="c-ex">
+    host.innerHTML = `
+        <div class="c-ex" style="border:0;margin:0;padding:0">
             <div class="c-ex__head">
                 <span class="c-ex__title">${icon('book')} Ejercicio_01 · WordCount paso a paso</span>
                 <div style="flex:1"></div>
-                <button class="c-btn" id="exOpenFolder" title="Abre la carpeta del ejercicio (mapper.py, reducer.py, datos)">${icon('folder')} Ver archivos</button>
+                <button class="c-btn" id="exOpenFolder" title="Abre la carpeta con mapper.py, reducer.py y los datos">${icon('folder')} Ver archivos</button>
                 <button class="c-btn c-btn--primary" id="exRunAll" ${vmRunning ? '' : 'disabled'}>${icon('play')} Ejecutar todo</button>
             </div>
-            <p class="c-ex__intro">Cuenta cuántas veces aparece cada palabra en un dataset usando MapReduce (Hadoop Streaming) dentro de la VM. Puedes correr cada paso por separado y ver su salida en el registro de abajo, o ejecutar todo de una vez. Es el mismo ejercicio que en la versión portable.</p>
+            <p class="c-ex__intro">Cuenta cuántas veces aparece cada palabra en un dataset usando MapReduce (Hadoop Streaming). Puedes correr cada paso por separado y ver su salida en el registro de abajo, o ejecutar todo de una vez. ${vmRunning ? '' : '<b>Necesitas los servicios encendidos</b> (pestaña Servicios).'}</p>
             ${rows}
-        </div>
-        <div class="c-ex" id="hdfsSection">
-            <div class="c-ex__head">
-                <span class="c-ex__title">${icon('folder')} Explorador de HDFS</span>
-                <div style="flex:1"></div>
-                <button class="c-btn" id="hdfsRefresh" ${vmRunning ? '' : 'disabled'}>${icon('refresh')} Actualizar</button>
-            </div>
-            <p class="c-ex__intro">Navega el sistema de archivos distribuido (HDFS) dentro de la VM. Haz click en una carpeta para abrirla. Aquí verás el input y el output del ejercicio.</p>
-            <div class="c-hdfs-tree" id="hdfsTree"><div class="c-hdfs-empty">Pulsa "Actualizar" para cargar HDFS.</div></div>
         </div>`;
-
     document.getElementById('exOpenFolder').addEventListener('click', async () => {
         const res = await window.go.main.App.OpenExerciseFolder();
         if (!res.ok) alert(res.message || 'No se pudo abrir la carpeta del ejercicio.');
     });
-    document.getElementById('hdfsRefresh').addEventListener('click', loadHdfsRoot);
     host.querySelectorAll('button[data-exrun]').forEach(b => {
         b.addEventListener('click', () => runExerciseStep(parseInt(b.dataset.exrun, 10), b));
     });
-    document.getElementById('exRunAll').addEventListener('click', () => runStep(STEPS[CURRENT]));
-    document.getElementById('exRefreshSvc').addEventListener('click', async () => {
-        await refreshDashboard();
-        renderExercise();
+    document.getElementById('exRunAll').addEventListener('click', async () => {
+        const res = await window.go.main.App.RunExerciseStep(0); // ensureServices + paso 1
+        // Tras el primero, encadenar el resto vía "ejecutar todo" del backend:
+        await runAllExerciseSteps();
+        showActionResult(res);
     });
-    document.getElementById('svcStartAll').addEventListener('click', async (e) => {
-        const b = e.currentTarget;
-        b.disabled = true; b.innerHTML = '<span class="c-spinner-sm"></span> Levantando servicios… (puede tardar ~30s)';
-        try {
-            const res = await window.go.main.App.StartAllServices();
-            if (!res.ok) alert(res.message || 'No se pudieron levantar los servicios.');
-            await refreshDashboard();
-            renderExercise();
-        } finally { /* renderExercise ya repintó el botón */ }
-    });
-    document.getElementById('svcStopAll').addEventListener('click', async (e) => {
-        if (!confirm('¿Detener todos los servicios dentro de la VM? El ejercicio dejará de funcionar hasta que los vuelvas a levantar. La VM seguirá encendida.')) return;
-        const b = e.currentTarget;
-        b.disabled = true; b.innerHTML = '<span class="c-spinner-sm"></span> Deteniendo…';
-        try {
-            const res = await window.go.main.App.StopAllServices();
-            if (!res.ok) alert(res.message || 'No se pudieron detener los servicios.');
-            await refreshDashboard();
-            renderExercise();
-        } finally { /* renderExercise repinta */ }
-    });
+}
+
+// runAllExerciseSteps ejecuta los pasos 2..N en orden (el 1 ya lo lanzó quien
+// llama, que además asegura servicios). Reusa RunExerciseStep para coherencia.
+async function runAllExerciseSteps() {
+    for (let i = 1; i < EX_STEPS.length; i++) {
+        const res = await window.go.main.App.RunExerciseStep(i);
+        if (!res.ok) { showActionResult(res); return; }
+    }
+}
+
+/* === Lab · HDFS ========================================================== */
+function renderLabHdfs() {
+    const host = document.getElementById('labBody');
+    if (!host) return;
+    const vmRunning = LAST_DASH.vmState === 'running';
+    host.innerHTML = `
+        <div class="c-ex" style="border:0;margin:0;padding:0">
+            <div class="c-ex__head">
+                <span class="c-ex__title">${icon('folder')} Explorador de HDFS</span>
+                <div style="flex:1"></div>
+                <button class="c-btn c-btn--primary" id="hdfsRefresh" ${vmRunning ? '' : 'disabled'}>${icon('refresh')} Cargar / Actualizar</button>
+            </div>
+            <p class="c-ex__intro">Navega el sistema de archivos distribuido (HDFS). Haz click en una carpeta para abrirla. Aquí verás el input y el output de los ejercicios.</p>
+            <div class="c-hdfs-tree" id="hdfsTree"><div class="c-hdfs-empty">Pulsa "Cargar / Actualizar" para ver HDFS.</div></div>
+        </div>`;
+    document.getElementById('hdfsRefresh').addEventListener('click', loadHdfsRoot);
+}
+
+async function runExerciseStep(idx, btn) {
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="c-spinner-sm"></span> Ejecutando…'; }
+    try {
+        const res = await window.go.main.App.RunExerciseStep(idx);
+        showActionResult(res);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('play')} Ejecutar`; }
+    }
 }
 
 async function runExerciseStep(idx, btn) {

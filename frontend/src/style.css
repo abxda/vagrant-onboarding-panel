@@ -343,3 +343,8 @@ svg { width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
 .c-hdfs-file { padding: 4px 6px; color: var(--color-text-muted); }
 .c-hdfs-file svg { width: 14px; height: 14px; vertical-align: middle; }
 .c-hdfs-empty { padding: 6px; color: var(--color-text-muted); font-style: italic; }
+
+/* Sidebar agrupado: Preparación / Mi Laboratorio */
+.c-navgroup { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-muted); padding: var(--s-4) var(--s-3) var(--s-2); }
+.c-step-nav--lab .c-step-nav__num { background: var(--color-brand); color: #fff; }
+.c-step-nav--lab.is-active .c-step-nav__num { background: #fff; color: var(--color-brand); }
