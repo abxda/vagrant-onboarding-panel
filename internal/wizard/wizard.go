@@ -88,7 +88,7 @@ func Steps() []Step {
 			ID:             StepServidores,
 			Index:          6,
 			Title:          "Iniciar servicios y ejercicio",
-			Why:            "Dentro de la VM iniciamos HDFS y verificamos que responda, y dejamos listo el Ejercicio_01 (WordCount con Hadoop Streaming) para ejecutarlo paso a paso, igual que en la versión portable. Todo corre dentro de la máquina vía 'vagrant ssh'.",
+			Why:            "Este es el paso final. Abajo verás el estado de los servicios dentro de la VM (HDFS, Kafka, Elasticsearch, Jupyter) y el Ejercicio_01 (WordCount) para hacerlo paso a paso. Si los servicios están apagados, el botón 'Iniciar servicios' o el paso 1 del ejercicio los arrancan. Cuando todo esté en verde, usa los botones de arriba para abrir Jupyter o tu carpeta de trabajo. Es el mismo ejercicio que en la versión portable.",
 			NeedsElevation: false,
 			ActionLabel:    "Iniciar servicios",
 		},

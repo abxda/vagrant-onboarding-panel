@@ -38,6 +38,16 @@ func Load(path string) *State {
 	if s.StepStatus == nil {
 		s.StepStatus = map[string]string{}
 	}
+	// Sanea estados "running" persistidos: si el panel se cerró mientras un
+	// paso estaba ejecutándose, ese "running" quedó guardado en disco aunque
+	// ya no hay nada corriendo. Al cargar, lo bajamos a "unknown" para que el
+	// botón vuelva a estar disponible (si no, queda gris con spinner para
+	// siempre y el alumno no puede hacer click).
+	for k, v := range s.StepStatus {
+		if v == "running" {
+			s.StepStatus[k] = "unknown"
+		}
+	}
 	if s.Lang == "" {
 		s.Lang = "es"
 	}

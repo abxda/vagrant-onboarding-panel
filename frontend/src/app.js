@@ -19,6 +19,7 @@ const ICONS = {
     terminal: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>',
     book:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>',
     folder:   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
+    server:   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>',
 };
 function icon(name) { return ICONS[name] || ICONS.info; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -159,9 +160,9 @@ function renderStep() {
             </div>
             <p class="c-step-why">${esc(s.why)}</p>
             ${elevBlock}
-            <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <div style="display:flex;gap:12px;flex-wrap:wrap" id="stepButtons">
                 <button class="c-btn c-btn--primary" id="btnRun" ${running ? 'disabled' : ''}>
-                    ${running ? '<span class="c-spinner-sm"></span>' : icon('play')} ${esc(s.actionLabel)}
+                    ${running ? '<span class="c-spinner-sm"></span>' : icon('play')} ${esc(stepActionLabel(s))}
                 </button>
                 <button class="c-btn" id="btnCheck" ${running ? 'disabled' : ''}>${icon('refresh')} Verificar estado</button>
             </div>
@@ -207,6 +208,7 @@ function renderStep() {
     // The services step shows the step-by-step exercise (homologado con el portable).
     if (s.id === 'servidores') {
         renderExercise();
+        refreshDashboard().then(renderExercise); // refresca el estado real al entrar
     }
     document.getElementById('btnClearLog').addEventListener('click', async () => {
         await window.go.main.App.ClearLog();
@@ -442,6 +444,20 @@ async function openFolder() {
     if (!res.ok) alert(res.message || 'No se pudo abrir la carpeta.');
 }
 
+// stepActionLabel ajusta el texto del botón principal. En el Paso 6, si los
+// servicios ya están corriendo, "Iniciar servicios" confunde -> lo cambiamos
+// a "Verificar e iniciar ejercicio" para que el botón tenga sentido.
+function stepActionLabel(s) {
+    if (s.id === 'servidores') {
+        const svc = LAST_DASH.services || {};
+        if (LAST_DASH.vmState === 'running' && svc.hdfs) {
+            return 'Ejecutar todo el ejercicio';
+        }
+        return 'Iniciar servicios y ejercicio';
+    }
+    return s.actionLabel;
+}
+
 /* ---------- Ejercicio paso a paso (Paso 6, homologado con el portable) ----- */
 let EX_STEPS = [];
 async function renderExercise() {
@@ -449,31 +465,67 @@ async function renderExercise() {
     if (!host) return;
     if (!EX_STEPS.length) {
         try { EX_STEPS = await window.go.main.App.GetExerciseSteps(); }
-        catch (e) { return; }
+        catch (e) { host.innerHTML = `<div class="c-alert c-alert--warn">${icon('alert')} No pude cargar el ejercicio. Reinicia el panel.</div>`; return; }
     }
+
+    const vmRunning = LAST_DASH.vmState === 'running';
+    const svc = LAST_DASH.services || {};
+
+    // Panel de estado de servicios — prominente, para que el alumno sepa qué pasa.
+    const svcChip = (on, label) => {
+        const cls = vmRunning && on ? 'ok' : 'muted';
+        const txt = vmRunning && on ? 'activo' : (vmRunning ? 'apagado' : '—');
+        return `<div class="c-svc"><span class="c-dot c-dot--${cls}"></span><span class="c-svc__name">${label}</span><span class="c-svc__state">${txt}</span></div>`;
+    };
+    const allUp = vmRunning && svc.hdfs && svc.kafka && svc.elastic;
+    const statusPanel = `
+        <div class="c-svcpanel">
+            <div class="c-svcpanel__head">
+                <span class="c-svcpanel__title">${icon('server')} Estado dentro de la máquina virtual</span>
+                <button class="c-btn c-btn--sm" id="exRefreshSvc">${icon('refresh')} Actualizar</button>
+            </div>
+            <div class="c-svcpanel__grid">
+                ${svcChip(svc.hdfs, 'HDFS')}
+                ${svcChip(svc.kafka, 'Kafka')}
+                ${svcChip(svc.elastic, 'Elasticsearch')}
+                ${svcChip(svc.jupyter, 'Jupyter')}
+            </div>
+            <div class="c-svcpanel__hint">${
+                !vmRunning ? `${icon('alert')} La máquina virtual no está encendida. Vuelve al paso 5 y pulsa "Levantar VM".`
+                : allUp ? `${icon('check')} Los servicios <b>ya están corriendo</b> dentro de la VM (la máquina virtual los mantiene activos aunque cierres este panel). <b>No necesitas pulsar "Iniciar servicios"</b>: puedes ir directo al ejercicio, o abrir Jupyter / la carpeta de trabajo (botones de arriba).`
+                : `${icon('info')} Los servicios están apagados dentro de la VM. Pulsa "Iniciar servicios" (botón azul arriba) o simplemente ejecuta el paso 1 del ejercicio: arranca el stack automáticamente.`
+            }</div>
+        </div>`;
+
     const rows = EX_STEPS.map((s, i) => `
         <div class="c-ex-step" id="exstep-${i}">
             <div class="c-ex-step__head">
                 <span class="c-ex-step__num">${s.index}</span>
                 <span class="c-ex-step__title">${esc(s.title.replace(/^\d+\s·\s/, ''))}</span>
-                <button class="c-btn c-btn--sm" data-exrun="${i}">${icon('play')} Ejecutar</button>
+                <button class="c-btn c-btn--sm" data-exrun="${i}" ${vmRunning ? '' : 'disabled'}>${icon('play')} Ejecutar</button>
             </div>
             <div class="c-ex-step__notes">${esc(s.notes)}</div>
             <pre class="c-ex-step__cmd">${esc(s.cmd)}</pre>
         </div>`).join('');
-    host.innerHTML = `
+
+    host.innerHTML = statusPanel + `
         <div class="c-ex">
             <div class="c-ex__head">
                 <span class="c-ex__title">${icon('book')} Ejercicio_01 · WordCount paso a paso</span>
-                <button class="c-btn c-btn--primary" id="exRunAll">${icon('play')} Ejecutar todo</button>
+                <button class="c-btn c-btn--primary" id="exRunAll" ${vmRunning ? '' : 'disabled'}>${icon('play')} Ejecutar todo</button>
             </div>
-            <p class="c-ex__intro">Cuenta cuántas veces aparece cada palabra en un dataset usando MapReduce (Hadoop Streaming) dentro de la VM. Puedes correr cada paso por separado y ver su salida, o ejecutar todo de una vez. Igual que en la versión portable.</p>
+            <p class="c-ex__intro">Cuenta cuántas veces aparece cada palabra en un dataset usando MapReduce (Hadoop Streaming) dentro de la VM. Puedes correr cada paso por separado y ver su salida en el registro de abajo, o ejecutar todo de una vez. Es el mismo ejercicio que en la versión portable.</p>
             ${rows}
         </div>`;
+
     host.querySelectorAll('button[data-exrun]').forEach(b => {
         b.addEventListener('click', () => runExerciseStep(parseInt(b.dataset.exrun, 10), b));
     });
     document.getElementById('exRunAll').addEventListener('click', () => runStep(STEPS[CURRENT]));
+    document.getElementById('exRefreshSvc').addEventListener('click', async () => {
+        await refreshDashboard();
+        renderExercise();
+    });
 }
 
 async function runExerciseStep(idx, btn) {
