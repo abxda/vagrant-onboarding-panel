@@ -63,16 +63,32 @@ type Step struct {
 }
 
 // StartServicesCmd starts the box's Big Data stack (HDFS, Kafka, Elasticsearch,
-// Jupyter) using the bundled quasar-start.sh script. Run with sudo (passwordless
-// in the box).
+// Jupyter). Run with sudo (passwordless in the box).
 //
-// CRITICAL: we redirect the script's stdio to a file inside the VM
-// (</dev/null >/tmp/... 2>&1). Without this the SSH channel never closes —
-// Elasticsearch (-d) and Jupyter (&) inherit the channel's stdout, so
-// `vagrant ssh -c` hangs until it times out. Redirecting detaches them and the
-// command returns immediately, leaving the daemons running in the background.
-// It also keeps the noisy ES/Jupyter boot logs out of the panel console.
-const StartServicesCmd = "sudo /usr/local/bin/quasar-start.sh </dev/null >/tmp/quasar-start.log 2>&1; echo 'Stack de servicios lanzado (detalle dentro de la VM en /tmp/quasar-start.log).'"
+// We do NOT call quasar-start.sh blindly. Real failure seen in testing: a
+// half-dead Kafka left a zombie JVM holding the controller port 9093 →
+// "Address already in use" → Kafka never came back, and quasar-start.sh
+// doesn't clean zombies. So we:
+//  1. Kill any Kafka zombie that is NOT a healthy broker (holds 9093 but not
+//     9092), freeing the controller port. Healthy Kafka is left alone.
+//  2. Run quasar-start.sh (idempotent for the other services).
+//
+// CRITICAL: stdio is redirected to a file inside the VM (</dev/null >log 2>&1).
+// Without this the SSH channel never closes — Elasticsearch (-d) and Jupyter
+// (&) inherit the channel's stdout and `vagrant ssh -c` hangs until timeout.
+// Redirecting detaches them; the command returns immediately, daemons keep
+// running in the background, and the noisy boot logs stay out of the panel.
+const StartServicesCmd = `bash -lc '
+# Si Kafka tiene el controller (9093) pero NO el broker (9092), es un zombie:
+# lo matamos para liberar el puerto y que arranque limpio.
+if ss -tln 2>/dev/null | grep -q ":9093 " && ! ss -tln 2>/dev/null | grep -q ":9092 "; then
+  echo "Kafka quedó a medias (zombie en 9093); lo reinicio limpio…"
+  sudo pkill -9 -f kafka 2>/dev/null || true
+  sleep 3
+fi
+sudo /usr/local/bin/quasar-start.sh </dev/null >/tmp/quasar-start.log 2>&1
+echo "Stack de servicios lanzado (detalle en /tmp/quasar-start.log dentro de la VM)."
+' </dev/null >/tmp/quasar-wrap.log 2>&1; cat /tmp/quasar-wrap.log`
 
 // WaitHDFSCmd polls until the HDFS NameNode RPC answers (or ~90s elapse), so we
 // don't run the job before the daemons finished booting.

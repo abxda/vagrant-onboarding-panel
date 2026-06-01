@@ -708,6 +708,84 @@ func (a *App) ResetWizard() {
 	a.sink.Emit("INFO", "Progreso del asistente reiniciado.")
 }
 
+// StartAllServices runs quasar-start.sh inside the VM to bring up the whole
+// Big Data stack (HDFS, Kafka, Elasticsearch, Jupyter). Idempotent: services
+// already running stay, missing ones (e.g. a Kafka that crashed) get started.
+// This is the "Levantar todos los servicios" button — separate from the
+// exercise.
+func (a *App) StartAllServices() ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	if st, _ := c.State(a.ctx); st != "running" {
+		return ActionResult{OK: false, Message: "La VM no está encendida. Levántala en el paso 5 primero."}
+	}
+	a.sink.Emit("INFO", strings.Repeat("─", 56))
+	a.sink.Emit("INFO", "Levantando todos los servicios en la VM (HDFS, Kafka, Elasticsearch, Jupyter)…")
+	if res, err := c.SSH(a.ctx, 5*time.Minute, labexercise.StartServicesCmd); err != nil || res.ExitCode != 0 {
+		a.sink.Emit("ERROR", "Falló el arranque de los servicios.")
+		return ActionResult{OK: false, Message: "No pude iniciar los servicios. Revisa el registro."}
+	}
+	a.sink.Emit("INFO", "Comando de arranque enviado. Verificando estado en unos segundos…")
+	// Give daemons a moment, then report what's up.
+	time.Sleep(6 * time.Second)
+	svc, _ := c.Services(a.ctx)
+	a.emitServices(svc)
+	a.sink.Emit("INFO", fmt.Sprintf("Estado: HDFS=%s Kafka=%s Elasticsearch=%s Jupyter=%s",
+		onoff(svc.HDFS), onoff(svc.Kafka), onoff(svc.Elastic), onoff(svc.Jupyter)))
+	if svc.HDFS && svc.Kafka && svc.Elastic {
+		return ActionResult{OK: true, Message: "Servicios levantados."}
+	}
+	return ActionResult{OK: true, Message: "Arranque enviado. Algún servicio puede tardar unos segundos más; pulsa Actualizar."}
+}
+
+// StopAllServices stops the whole stack inside the VM via quasar-stop.sh.
+func (a *App) StopAllServices() ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	if st, _ := c.State(a.ctx); st != "running" {
+		return ActionResult{OK: false, Message: "La VM no está encendida."}
+	}
+	a.sink.Emit("INFO", strings.Repeat("─", 56))
+	a.sink.Emit("INFO", "Deteniendo todos los servicios en la VM…")
+	if res, err := c.SSH(a.ctx, 3*time.Minute, labexercise.StopServicesCmd+" </dev/null >/tmp/quasar-stop.log 2>&1; echo detenido"); err != nil || res.ExitCode != 0 {
+		a.sink.Emit("ERROR", "Falló la detención de los servicios.")
+		return ActionResult{OK: false, Message: "No pude detener los servicios. Revisa el registro."}
+	}
+	time.Sleep(3 * time.Second)
+	svc, _ := c.Services(a.ctx)
+	a.emitServices(svc)
+	a.sink.Emit("INFO", "Servicios detenidos.")
+	return ActionResult{OK: true, Message: "Servicios detenidos."}
+}
+
+// GetServices returns the current per-service state inside the VM (quiet).
+func (a *App) GetServices() vagrant.Services {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return vagrant.Services{}
+	}
+	if st, _ := c.State(a.ctx); st != "running" {
+		return vagrant.Services{}
+	}
+	svc, _ := c.Services(a.ctx)
+	return svc
+}
+
+func (a *App) emitServices(svc vagrant.Services) {
+	wruntime.EventsEmit(a.ctx, "services:update", svc)
+}
+
+func onoff(b bool) string {
+	if b {
+		return "activo"
+	}
+	return "apagado"
+}
+
 // OpenWorkFolder opens the host-side lab folder that Vagrant mounts into the
 // VM at /vagrant (and that Jupyter serves). Files the student drops here appear
 // inside Jupyter Lab. This is the "carpeta de trabajo".
@@ -722,6 +800,26 @@ func (a *App) OpenWorkFolder() ActionResult {
 	}
 	a.sink.Emit("INFO", "Carpeta de trabajo abierta: "+c.WorkDir+" (se monta en la VM como /vagrant y la ve Jupyter).")
 	return ActionResult{OK: true, Message: "Carpeta de trabajo abierta. Lo que pongas aquí lo verás en Jupyter."}
+}
+
+// OpenExerciseFolder opens the host-side folder where the exercise files
+// (mapper.py, reducer.py, breweries.csv) were materialized, so the student can
+// inspect or edit them. These are uploaded to the VM when the exercise runs.
+func (a *App) OpenExerciseFolder() ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	exDir := filepath.Join(c.WorkDir, "ejercicio_01")
+	if _, err := os.Stat(exDir); err != nil {
+		// Materialize it if it isn't on disk yet.
+		_, _ = labexercise.Materialize(exDir)
+	}
+	if err := desktop.OpenPath(exDir); err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	a.sink.Emit("INFO", "Carpeta del ejercicio abierta: "+exDir)
+	return ActionResult{OK: true, Message: "Carpeta del ejercicio abierta."}
 }
 
 // OpenJupyter opens Jupyter Lab in the default browser. The box's

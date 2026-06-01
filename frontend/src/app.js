@@ -20,6 +20,7 @@ const ICONS = {
     book:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>',
     folder:   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
     server:   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>',
+    stop:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>',
 };
 function icon(name) { return ICONS[name] || ICONS.info; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -67,6 +68,11 @@ function wireEvents() {
         renderStatusStrip();
         // When the exercise finishes, refresh service dots promptly.
         if (!EX_PROGRESS) refreshDashboard();
+    });
+    window.runtime.EventsOn('services:update', (svc) => {
+        LAST_DASH.services = svc || LAST_DASH.services;
+        renderStatusStrip();
+        if (STEPS[CURRENT] && STEPS[CURRENT].id === 'servidores') renderExercise();
     });
 }
 
@@ -160,7 +166,7 @@ function renderStep() {
             </div>
             <p class="c-step-why">${esc(s.why)}</p>
             ${elevBlock}
-            <div style="display:flex;gap:12px;flex-wrap:wrap" id="stepButtons">
+            <div style="display:flex;gap:12px;flex-wrap:wrap${s.id === 'servidores' ? ';display:none' : ''}" id="stepButtons">
                 <button class="c-btn c-btn--primary" id="btnRun" ${running ? 'disabled' : ''}>
                     ${running ? '<span class="c-spinner-sm"></span>' : icon('play')} ${esc(stepActionLabel(s))}
                 </button>
@@ -412,7 +418,16 @@ function renderStatusStrip() {
 async function refreshDashboard() {
     try {
         const d = await window.go.main.App.GetDashboard();
-        LAST_DASH = d || LAST_DASH;
+        if (!d) return;
+        // No degradar el estado: si una consulta tarda y vuelve con vmState
+        // vacío (vagrant ocupado), conservamos el último estado conocido en
+        // vez de mostrar "Vagrant no listo" — eso parecía que la VM había
+        // muerto al detener servicios, cuando seguía encendida.
+        if (!d.vmState && LAST_DASH.vmState) {
+            LAST_DASH = { ...LAST_DASH, services: d.services || LAST_DASH.services };
+        } else {
+            LAST_DASH = d;
+        }
         renderStatusStrip();
     } catch (e) { /* vagrant not ready — keep last */ }
 }
@@ -471,30 +486,34 @@ async function renderExercise() {
     const vmRunning = LAST_DASH.vmState === 'running';
     const svc = LAST_DASH.services || {};
 
-    // Panel de estado de servicios — prominente, para que el alumno sepa qué pasa.
+    // Panel de CONTROL de servicios — el alumno enciende/apaga todo desde aquí.
     const svcChip = (on, label) => {
         const cls = vmRunning && on ? 'ok' : 'muted';
         const txt = vmRunning && on ? 'activo' : (vmRunning ? 'apagado' : '—');
         return `<div class="c-svc"><span class="c-dot c-dot--${cls}"></span><span class="c-svc__name">${label}</span><span class="c-svc__state">${txt}</span></div>`;
     };
-    const allUp = vmRunning && svc.hdfs && svc.kafka && svc.elastic;
+    const allUp = vmRunning && svc.hdfs && svc.kafka && svc.elastic && svc.jupyter;
+    const someUp = vmRunning && (svc.hdfs || svc.kafka || svc.elastic || svc.jupyter);
     const statusPanel = `
         <div class="c-svcpanel">
-            <div class="c-svcpanel__head">
-                <span class="c-svcpanel__title">${icon('server')} Estado dentro de la máquina virtual</span>
+            <div class="c-svcpanel__actionbar">
+                <button class="c-btn c-btn--primary c-btn--lg" id="svcStartAll" ${vmRunning ? '' : 'disabled'}>${icon('play')} Levantar todos los servicios</button>
+                <button class="c-btn c-btn--lg" id="svcStopAll" ${someUp ? '' : 'disabled'}>${icon('stop')} Detener todos</button>
+                <div style="flex:1"></div>
                 <button class="c-btn c-btn--sm" id="exRefreshSvc">${icon('refresh')} Actualizar</button>
             </div>
+            <div class="c-svcpanel__hint">${
+                !vmRunning ? `${icon('alert')} La máquina virtual no está encendida. Vuelve al paso 5 y pulsa "Levantar VM".`
+                : allUp ? `${icon('check')} Todos los servicios están <b>activos</b>. La VM los mantiene corriendo aunque cierres el panel.`
+                : someUp ? `${icon('info')} Algunos servicios están apagados (en gris abajo). Pulsa <b>"Levantar todos los servicios"</b> — enciende los que faltan sin reiniciar los que ya corren.`
+                : `${icon('info')} Los servicios están apagados. Pulsa <b>"Levantar todos los servicios"</b> para encenderlos.`
+            }</div>
             <div class="c-svcpanel__grid">
                 ${svcChip(svc.hdfs, 'HDFS')}
                 ${svcChip(svc.kafka, 'Kafka')}
                 ${svcChip(svc.elastic, 'Elasticsearch')}
                 ${svcChip(svc.jupyter, 'Jupyter')}
             </div>
-            <div class="c-svcpanel__hint">${
-                !vmRunning ? `${icon('alert')} La máquina virtual no está encendida. Vuelve al paso 5 y pulsa "Levantar VM".`
-                : allUp ? `${icon('check')} Los servicios <b>ya están corriendo</b> dentro de la VM (la máquina virtual los mantiene activos aunque cierres este panel). <b>No necesitas pulsar "Iniciar servicios"</b>: puedes ir directo al ejercicio, o abrir Jupyter / la carpeta de trabajo (botones de arriba).`
-                : `${icon('info')} Los servicios están apagados dentro de la VM. Pulsa "Iniciar servicios" (botón azul arriba) o simplemente ejecuta el paso 1 del ejercicio: arranca el stack automáticamente.`
-            }</div>
         </div>`;
 
     const rows = EX_STEPS.map((s, i) => `
@@ -512,12 +531,18 @@ async function renderExercise() {
         <div class="c-ex">
             <div class="c-ex__head">
                 <span class="c-ex__title">${icon('book')} Ejercicio_01 · WordCount paso a paso</span>
+                <div style="flex:1"></div>
+                <button class="c-btn" id="exOpenFolder" title="Abre la carpeta del ejercicio (mapper.py, reducer.py, datos)">${icon('folder')} Ver archivos</button>
                 <button class="c-btn c-btn--primary" id="exRunAll" ${vmRunning ? '' : 'disabled'}>${icon('play')} Ejecutar todo</button>
             </div>
             <p class="c-ex__intro">Cuenta cuántas veces aparece cada palabra en un dataset usando MapReduce (Hadoop Streaming) dentro de la VM. Puedes correr cada paso por separado y ver su salida en el registro de abajo, o ejecutar todo de una vez. Es el mismo ejercicio que en la versión portable.</p>
             ${rows}
         </div>`;
 
+    document.getElementById('exOpenFolder').addEventListener('click', async () => {
+        const res = await window.go.main.App.OpenExerciseFolder();
+        if (!res.ok) alert(res.message || 'No se pudo abrir la carpeta del ejercicio.');
+    });
     host.querySelectorAll('button[data-exrun]').forEach(b => {
         b.addEventListener('click', () => runExerciseStep(parseInt(b.dataset.exrun, 10), b));
     });
@@ -525,6 +550,27 @@ async function renderExercise() {
     document.getElementById('exRefreshSvc').addEventListener('click', async () => {
         await refreshDashboard();
         renderExercise();
+    });
+    document.getElementById('svcStartAll').addEventListener('click', async (e) => {
+        const b = e.currentTarget;
+        b.disabled = true; b.innerHTML = '<span class="c-spinner-sm"></span> Levantando servicios… (puede tardar ~30s)';
+        try {
+            const res = await window.go.main.App.StartAllServices();
+            if (!res.ok) alert(res.message || 'No se pudieron levantar los servicios.');
+            await refreshDashboard();
+            renderExercise();
+        } finally { /* renderExercise ya repintó el botón */ }
+    });
+    document.getElementById('svcStopAll').addEventListener('click', async (e) => {
+        if (!confirm('¿Detener todos los servicios dentro de la VM? El ejercicio dejará de funcionar hasta que los vuelvas a levantar. La VM seguirá encendida.')) return;
+        const b = e.currentTarget;
+        b.disabled = true; b.innerHTML = '<span class="c-spinner-sm"></span> Deteniendo…';
+        try {
+            const res = await window.go.main.App.StopAllServices();
+            if (!res.ok) alert(res.message || 'No se pudieron detener los servicios.');
+            await refreshDashboard();
+            renderExercise();
+        } finally { /* renderExercise repinta */ }
     });
 }
 
