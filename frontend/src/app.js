@@ -21,6 +21,7 @@ const ICONS = {
     folder:   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
     server:   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>',
     stop:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>',
+    power:    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>',
 };
 function icon(name) { return ICONS[name] || ICONS.info; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -579,6 +580,7 @@ function renderLabServicios() {
                 <button class="c-btn c-btn--lg" id="svcStopAll" ${someUp ? '' : 'disabled'}>${icon('stop')} Detener todos</button>
                 <div style="flex:1"></div>
                 <button class="c-btn c-btn--sm" id="exRefreshSvc">${icon('refresh')} Actualizar</button>
+                <button class="c-btn c-btn--sm c-btn--danger" id="vmShutdown" ${vmRunning ? '' : 'disabled'} title="Apaga la máquina virtual y libera los puertos (para poder usar el Portable)">${icon('power')} Apagar VM</button>
             </div>
             <div class="c-svcpanel__hint">${
                 !vmRunning ? `${icon('alert')} La máquina virtual no está encendida. Vuelve a Preparación y completa "Levantar VM".`
@@ -607,6 +609,15 @@ function renderLabServicios() {
         b.disabled = true; b.innerHTML = '<span class="c-spinner-sm"></span> Deteniendo…';
         const res = await window.go.main.App.StopAllServices();
         if (!res.ok) alert(res.message || 'No se pudieron detener los servicios.');
+        await refreshDashboard(); renderLabServicios();
+    });
+    const vmBtn = document.getElementById('vmShutdown');
+    if (vmBtn) vmBtn.addEventListener('click', async (e) => {
+        if (!confirm('¿Apagar la máquina virtual?\n\nEsto detiene los servicios limpiamente y apaga la VM, liberando los puertos (9870/9200/8888) para que puedas usar el Portable. Tu trabajo en HDFS se conserva; la próxima vez que levantes la VM seguirá ahí.')) return;
+        const b = e.currentTarget;
+        b.disabled = true; b.innerHTML = '<span class="c-spinner-sm"></span> Apagando VM… (~30s)';
+        const res = await window.go.main.App.ShutdownVM();
+        if (!res.ok) alert(res.message || 'No se pudo apagar la VM.');
         await refreshDashboard(); renderLabServicios();
     });
 }

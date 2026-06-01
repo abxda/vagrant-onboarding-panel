@@ -763,6 +763,44 @@ func (a *App) StopAllServices() ActionResult {
 	return ActionResult{OK: true, Message: "Servicios detenidos."}
 }
 
+// ShutdownVM apaga la VM LIMPIAMENTE: primero detiene los servicios del stack
+// (quasar-stop, para no corromper HDFS) y luego apaga la máquina por NOMBRE vía
+// VirtualBox (acpipowerbutton). El apagado por nombre no necesita el directorio
+// del Vagrantfile, así que funciona aunque la VM se haya levantado en otra
+// carpeta-semilla. Pensado para liberar los puertos y poder usar el Portable.
+func (a *App) ShutdownVM() ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 3*time.Minute)
+	defer cancel()
+
+	if !vagrant.VMIsRunning(ctx) {
+		a.sink.Emit("INFO", "La máquina virtual ya está apagada.")
+		return ActionResult{OK: true, Message: "La VM ya estaba apagada."}
+	}
+	a.sink.Emit("INFO", strings.Repeat("─", 56))
+	// 1) Detener servicios limpio (el panel sí conoce el directorio).
+	if st, _ := c.State(a.ctx); st == "running" {
+		a.sink.Emit("INFO", "Deteniendo servicios antes de apagar (evita corromper HDFS)…")
+		_, _ = c.SSH(a.ctx, 2*time.Minute, labexercise.StopServicesCmd+" </dev/null >/tmp/quasar-stop.log 2>&1; echo ok")
+	}
+	// 2) Apagado ACPI por nombre de VM (limpio, no depende del directorio).
+	a.sink.Emit("INFO", "Apagando la máquina virtual ("+vagrant.VMName+")…")
+	if err := vagrant.PowerButton(ctx); err != nil {
+		a.sink.Emit("ERROR", "No pude enviar el apagado: "+err.Error())
+		return ActionResult{OK: false, Message: "No pude apagar la VM: " + err.Error()}
+	}
+	if vagrant.WaitPoweredOff(ctx, 90*time.Second) {
+		a.sink.Emit("INFO", "✓ Máquina virtual apagada. Los puertos quedaron libres.")
+		a.emitServices(vagrant.Services{})
+		return ActionResult{OK: true, Message: "VM apagada limpiamente."}
+	}
+	a.sink.Emit("WARN", "La VM no confirmó el apagado a tiempo; puede seguir cerrándose.")
+	return ActionResult{OK: true, Message: "Apagado enviado; la VM está cerrándose."}
+}
+
 // GetServices returns the current per-service state inside the VM (quiet).
 func (a *App) GetServices() vagrant.Services {
 	c, err := a.vagrantClient()
