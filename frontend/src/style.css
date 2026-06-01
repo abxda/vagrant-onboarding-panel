@@ -305,3 +305,16 @@ svg { width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
     display: flex; gap: var(--s-2); align-items: flex-start;
 }
 .c-diag__advice svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 2px; color: var(--color-info); }
+
+/* Ejercicio paso a paso (Paso 6, homologado con el portable) */
+.c-ex { margin-top: var(--s-5); border-top: 1px solid var(--color-border); padding-top: var(--s-5); }
+.c-ex__head { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-2); }
+.c-ex__title { font-weight: 700; font-size: var(--fs-lg); flex: 1; display: inline-flex; align-items: center; gap: var(--s-2); }
+.c-ex__intro { color: var(--color-text-muted); font-size: var(--fs-sm); line-height: 1.55; margin: 0 0 var(--s-4); }
+.c-btn--sm { padding: 2px var(--s-3); font-size: var(--fs-xs); }
+.c-ex-step { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--s-3) var(--s-4); margin-bottom: var(--s-3); background: var(--color-surface); }
+.c-ex-step__head { display: flex; align-items: center; gap: var(--s-3); }
+.c-ex-step__num { width: 24px; height: 24px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--color-brand); color: #fff; font-size: var(--fs-xs); font-weight: 700; }
+.c-ex-step__title { font-weight: 600; flex: 1; }
+.c-ex-step__notes { color: var(--color-text-muted); font-size: var(--fs-sm); line-height: 1.5; margin: var(--s-2) 0; }
+.c-ex-step__cmd { margin: 0; padding: var(--s-2) var(--s-3); background: #0b1220; color: #cbd5e1; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: var(--fs-xs); white-space: pre-wrap; word-break: break-all; }

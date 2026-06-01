@@ -17,6 +17,8 @@ const ICONS = {
     trash:    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
     copy:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
     terminal: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>',
+    book:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>',
+    folder:   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
 };
 function icon(name) { return ICONS[name] || ICONS.info; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -103,12 +105,15 @@ function renderNav() {
 /* ---------- header actions ---------------------------------------------- */
 function renderHeaderActions() {
     const el = document.getElementById('viewActions');
+    const vmRunning = LAST_DASH.vmState === 'running';
     el.innerHTML =
-        `<button class="c-btn" id="btnSSH">${icon('terminal')} Abrir consola SSH</button>` +
-        `<button class="c-btn" id="btnTestElev">${icon('shield')} Probar elevación</button>` +
-        `<button class="c-btn" id="btnReset">${icon('trash')} Reiniciar progreso</button>`;
+        `<button class="c-btn" id="btnJupyter" ${vmRunning ? '' : 'disabled'} title="Abre Jupyter Lab en el navegador">${icon('book')} Abrir Jupyter</button>` +
+        `<button class="c-btn" id="btnFolder" title="Abre la carpeta de trabajo (lo que pongas ahí lo verás en Jupyter)">${icon('folder')} Carpeta de trabajo</button>` +
+        `<button class="c-btn" id="btnSSH">${icon('terminal')} Consola SSH</button>` +
+        `<button class="c-btn" id="btnReset">${icon('trash')} Reiniciar</button>`;
+    document.getElementById('btnJupyter').addEventListener('click', openJupyter);
+    document.getElementById('btnFolder').addEventListener('click', openFolder);
     document.getElementById('btnSSH').addEventListener('click', openSSH);
-    document.getElementById('btnTestElev').addEventListener('click', testElevation);
     document.getElementById('btnReset').addEventListener('click', async () => {
         if (!confirm('¿Reiniciar el progreso del asistente? No se desinstala nada; solo se olvidan los pasos marcados como completos.')) return;
         await window.go.main.App.ResetWizard();
@@ -163,6 +168,7 @@ function renderStep() {
             <div id="stepResult"></div>
             <div id="toolStatus"></div>
             <div id="diagProbes"></div>
+            <div id="exerciseBox"></div>
         </div>
 
         <div class="c-console">
@@ -197,6 +203,10 @@ function renderStep() {
     // Install steps auto-detect whether the tool is already present.
     if (s.id === 'virtualbox' || s.id === 'vagrant') {
         refreshToolStatus(s.id);
+    }
+    // The services step shows the step-by-step exercise (homologado con el portable).
+    if (s.id === 'servidores') {
+        renderExercise();
     }
     document.getElementById('btnClearLog').addEventListener('click', async () => {
         await window.go.main.App.ClearLog();
@@ -412,7 +422,67 @@ async function openSSH() {
         const res = await window.go.main.App.OpenVagrantSSH();
         if (!res.ok) alert(res.message || 'No se pudo abrir la consola SSH.');
     } finally {
-        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('terminal')} Abrir consola SSH`; }
+        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('terminal')} Consola SSH`; }
+    }
+}
+
+async function openJupyter() {
+    const btn = document.getElementById('btnJupyter');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="c-spinner-sm"></span> Abriendo…'; }
+    try {
+        const res = await window.go.main.App.OpenJupyter();
+        if (!res.ok) alert(res.message || 'No se pudo abrir Jupyter.');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('book')} Abrir Jupyter`; }
+    }
+}
+
+async function openFolder() {
+    const res = await window.go.main.App.OpenWorkFolder();
+    if (!res.ok) alert(res.message || 'No se pudo abrir la carpeta.');
+}
+
+/* ---------- Ejercicio paso a paso (Paso 6, homologado con el portable) ----- */
+let EX_STEPS = [];
+async function renderExercise() {
+    const host = document.getElementById('exerciseBox');
+    if (!host) return;
+    if (!EX_STEPS.length) {
+        try { EX_STEPS = await window.go.main.App.GetExerciseSteps(); }
+        catch (e) { return; }
+    }
+    const rows = EX_STEPS.map((s, i) => `
+        <div class="c-ex-step" id="exstep-${i}">
+            <div class="c-ex-step__head">
+                <span class="c-ex-step__num">${s.index}</span>
+                <span class="c-ex-step__title">${esc(s.title.replace(/^\d+\s·\s/, ''))}</span>
+                <button class="c-btn c-btn--sm" data-exrun="${i}">${icon('play')} Ejecutar</button>
+            </div>
+            <div class="c-ex-step__notes">${esc(s.notes)}</div>
+            <pre class="c-ex-step__cmd">${esc(s.cmd)}</pre>
+        </div>`).join('');
+    host.innerHTML = `
+        <div class="c-ex">
+            <div class="c-ex__head">
+                <span class="c-ex__title">${icon('book')} Ejercicio_01 · WordCount paso a paso</span>
+                <button class="c-btn c-btn--primary" id="exRunAll">${icon('play')} Ejecutar todo</button>
+            </div>
+            <p class="c-ex__intro">Cuenta cuántas veces aparece cada palabra en un dataset usando MapReduce (Hadoop Streaming) dentro de la VM. Puedes correr cada paso por separado y ver su salida, o ejecutar todo de una vez. Igual que en la versión portable.</p>
+            ${rows}
+        </div>`;
+    host.querySelectorAll('button[data-exrun]').forEach(b => {
+        b.addEventListener('click', () => runExerciseStep(parseInt(b.dataset.exrun, 10), b));
+    });
+    document.getElementById('exRunAll').addEventListener('click', () => runStep(STEPS[CURRENT]));
+}
+
+async function runExerciseStep(idx, btn) {
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="c-spinner-sm"></span> Ejecutando…'; }
+    try {
+        const res = await window.go.main.App.RunExerciseStep(idx);
+        showActionResult(res);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('play')} Ejecutar`; }
     }
 }
 

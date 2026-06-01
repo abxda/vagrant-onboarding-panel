@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/abxda/vagrant-onboarding-panel/internal/desktop"
 	"github.com/abxda/vagrant-onboarding-panel/internal/diagnose"
 	"github.com/abxda/vagrant-onboarding-panel/internal/elevate"
 	"github.com/abxda/vagrant-onboarding-panel/internal/labexercise"
@@ -451,33 +453,10 @@ func (a *App) runServicesAndExercise() ActionResult {
 		return ActionResult{Message: msg}
 	}
 
-	// Upload the exercise into the VM (SCP — no Guest Additions needed).
-	exDir := filepath.Join(c.WorkDir, "ejercicio_01")
-	a.sink.Emit("INFO", "Subiendo el Ejercicio_01 a la VM ("+labexercise.RemoteDir+")…")
-	if res, err := c.Upload(a.ctx, exDir, labexercise.RemoteDir); err != nil || res.ExitCode != 0 {
-		a.sink.Emit("WARN", "No pude subir el ejercicio con 'vagrant upload'; continuaré por si ya estaba en la VM.")
-	}
-
-	// Start the Big Data stack inside the VM (HDFS/Kafka/ES/Jupyter). The box
-	// does NOT auto-start these at boot — without this, the WordCount fails with
-	// "Connection refused" to the NameNode. Skip the start if HDFS is already up
-	// (avoids duplicating Jupyter on another port).
-	a.sink.Emit("INFO", strings.Repeat("─", 56))
-	if svc, _ := c.Services(a.ctx); svc.HDFS {
-		a.sink.Emit("INFO", "Los servicios ya están corriendo en la VM (HDFS detectado). No reinicio nada.")
-	} else {
-		a.sink.Emit("INFO", "Iniciando el stack de Big Data en la VM (HDFS, Kafka, Elasticsearch, Jupyter)…")
-		if res, err := c.SSH(a.ctx, 5*time.Minute, labexercise.StartServicesCmd); err != nil || res.ExitCode != 0 {
-			a.failStep(id)
-			a.sink.Emit("ERROR", "No pude iniciar los servicios con quasar-start.sh.")
-			return ActionResult{Message: "Falló el arranque de los servicios en la VM."}
-		}
-	}
-	a.sink.Emit("INFO", "Esperando a que HDFS esté listo…")
-	if res, err := c.SSH(a.ctx, 3*time.Minute, labexercise.WaitHDFSCmd); err != nil || res.ExitCode != 0 {
+	// Ensure the exercise is uploaded and the stack is up.
+	if err := a.ensureServicesReady(c); err != nil {
 		a.failStep(id)
-		a.sink.Emit("ERROR", "HDFS no respondió tras iniciar los servicios. Revisa el registro.")
-		return ActionResult{Message: "HDFS no quedó listo a tiempo."}
+		return ActionResult{Message: err.Error()}
 	}
 
 	// Run the WordCount playbook.
@@ -485,29 +464,117 @@ func (a *App) runServicesAndExercise() ActionResult {
 	a.sink.Emit("INFO", "Ejecutando el Ejercicio_01 (WordCount) dentro de la VM, paso a paso:")
 	for i, s := range steps {
 		a.emitExerciseProgress(i+1, len(steps), s.Title)
-		a.sink.Emit("INFO", strings.Repeat("─", 56))
-		a.sink.Emit("INFO", fmt.Sprintf("[%d/%d] %s", i+1, len(steps), s.Title))
-		if s.Notes != "" {
-			a.sink.Emit("INFO", "  ↳ "+s.Notes)
-		}
-		a.sink.Emit("INFO", "$ "+s.Cmd)
-		res, err := c.SSH(a.ctx, 20*time.Minute, s.Cmd)
-		if err != nil {
+		if err := a.runOneExerciseStep(c, steps, i); err != nil {
 			a.failStep(id)
 			a.emitExerciseProgress(0, 0, "")
-			a.sink.Emit("ERROR", "Error: "+err.Error())
-			return ActionResult{Message: fmt.Sprintf("El paso %d del ejercicio falló: %v", i+1, err)}
-		}
-		if res.ExitCode != 0 {
-			a.failStep(id)
-			a.emitExerciseProgress(0, 0, "")
-			return ActionResult{Message: fmt.Sprintf("El paso %d del ejercicio (%s) terminó con código %d. Revisa el registro.", i+1, s.Title, res.ExitCode)}
+			return ActionResult{Message: err.Error()}
 		}
 	}
 	a.emitExerciseProgress(0, 0, "") // clear
 	a.okStep(id)
 	a.sink.Emit("INFO", "✓ Ejercicio_01 (WordCount) completado dentro de la VM.")
 	return ActionResult{OK: true, Message: "Servicios verificados y Ejercicio_01 completado en la VM."}
+}
+
+// ensureServicesReady uploads the exercise (idempotent) and starts the Big Data
+// stack if HDFS isn't already up, then waits for HDFS. Shared by the run-all
+// path and the per-step path.
+func (a *App) ensureServicesReady(c *vagrant.Client) error {
+	exDir := filepath.Join(c.WorkDir, "ejercicio_01")
+	a.sink.Emit("INFO", "Subiendo el Ejercicio_01 a la VM ("+labexercise.RemoteDir+")…")
+	if res, err := c.Upload(a.ctx, exDir, labexercise.RemoteDir); err != nil || res.ExitCode != 0 {
+		a.sink.Emit("WARN", "No pude subir el ejercicio con 'vagrant upload'; continuaré por si ya estaba en la VM.")
+	}
+	a.sink.Emit("INFO", strings.Repeat("─", 56))
+	if svc, _ := c.Services(a.ctx); svc.HDFS {
+		a.sink.Emit("INFO", "Los servicios ya están corriendo en la VM (HDFS detectado). No reinicio nada.")
+	} else {
+		a.sink.Emit("INFO", "Iniciando el stack de Big Data en la VM (HDFS, Kafka, Elasticsearch, Jupyter)…")
+		if res, err := c.SSH(a.ctx, 5*time.Minute, labexercise.StartServicesCmd); err != nil || res.ExitCode != 0 {
+			a.sink.Emit("ERROR", "No pude iniciar los servicios con quasar-start.sh.")
+			return fmt.Errorf("falló el arranque de los servicios en la VM")
+		}
+	}
+	a.sink.Emit("INFO", "Esperando a que HDFS esté listo…")
+	if res, err := c.SSH(a.ctx, 3*time.Minute, labexercise.WaitHDFSCmd); err != nil || res.ExitCode != 0 {
+		a.sink.Emit("ERROR", "HDFS no respondió tras iniciar los servicios.")
+		return fmt.Errorf("HDFS no quedó listo a tiempo")
+	}
+	return nil
+}
+
+// runOneExerciseStep executes step idx of the playbook over SSH, streaming its
+// command + notes. Returns a descriptive error on failure.
+func (a *App) runOneExerciseStep(c *vagrant.Client, steps []labexercise.Step, idx int) error {
+	s := steps[idx]
+	a.sink.Emit("INFO", strings.Repeat("─", 56))
+	a.sink.Emit("INFO", fmt.Sprintf("[%d/%d] %s", idx+1, len(steps), s.Title))
+	if s.Notes != "" {
+		a.sink.Emit("INFO", "  ↳ "+s.Notes)
+	}
+	a.sink.Emit("INFO", "$ "+s.Cmd)
+	res, err := c.SSH(a.ctx, 20*time.Minute, s.Cmd)
+	if err != nil {
+		a.sink.Emit("ERROR", "Error: "+err.Error())
+		return fmt.Errorf("el paso %d del ejercicio falló: %v", idx+1, err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("el paso %d (%s) terminó con código %d. Revisa el registro", idx+1, s.Title, res.ExitCode)
+	}
+	return nil
+}
+
+// ExerciseStepView is a WordCount sub-step exposed to the frontend so the panel
+// can render the step-by-step exercise (homologado con el portable).
+type ExerciseStepView struct {
+	Index int    `json:"index"` // 1-based
+	Title string `json:"title"`
+	Notes string `json:"notes"`
+	Cmd   string `json:"cmd"`
+}
+
+// GetExerciseSteps returns the WordCount playbook for the UI to render the
+// per-step exercise view.
+func (a *App) GetExerciseSteps() []ExerciseStepView {
+	steps := labexercise.Steps()
+	out := make([]ExerciseStepView, len(steps))
+	for i, s := range steps {
+		out[i] = ExerciseStepView{Index: i + 1, Title: s.Title, Notes: s.Notes, Cmd: s.Cmd}
+	}
+	return out
+}
+
+// RunExerciseStep runs a single WordCount sub-step (0-based) inside the VM,
+// ensuring services are ready first. Lets the student advance one step at a
+// time, just like the portable launcher.
+func (a *App) RunExerciseStep(idx int) ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	if st, _ := c.State(a.ctx); st != "running" {
+		return ActionResult{OK: false, Message: "La VM no está corriendo. Levántala en el paso 5 primero."}
+	}
+	steps := labexercise.Steps()
+	if idx < 0 || idx >= len(steps) {
+		return ActionResult{OK: false, Message: "Paso fuera de rango."}
+	}
+	// On the first step, make sure the stack is up; later steps assume it.
+	if idx == 0 {
+		if err := a.ensureServicesReady(c); err != nil {
+			return ActionResult{OK: false, Message: err.Error()}
+		}
+	}
+	a.emitExerciseProgress(idx+1, len(steps), steps[idx].Title)
+	if err := a.runOneExerciseStep(c, steps, idx); err != nil {
+		a.emitExerciseProgress(0, 0, "")
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	if idx == len(steps)-1 {
+		a.emitExerciseProgress(0, 0, "")
+		a.sink.Emit("INFO", "✓ Ejercicio_01 (WordCount) completado.")
+	}
+	return ActionResult{OK: true, Message: fmt.Sprintf("Paso %d/%d completado.", idx+1, len(steps))}
 }
 
 func (a *App) markRunning(id wizard.StepID) {
@@ -639,6 +706,65 @@ func isSpinnerLine(s string) bool {
 func (a *App) ResetWizard() {
 	a.state.Reset()
 	a.sink.Emit("INFO", "Progreso del asistente reiniciado.")
+}
+
+// OpenWorkFolder opens the host-side lab folder that Vagrant mounts into the
+// VM at /vagrant (and that Jupyter serves). Files the student drops here appear
+// inside Jupyter Lab. This is the "carpeta de trabajo".
+func (a *App) OpenWorkFolder() ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	if err := desktop.OpenPath(c.WorkDir); err != nil {
+		a.sink.Emit("ERROR", "No pude abrir la carpeta de trabajo: "+err.Error())
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	a.sink.Emit("INFO", "Carpeta de trabajo abierta: "+c.WorkDir+" (se monta en la VM como /vagrant y la ve Jupyter).")
+	return ActionResult{OK: true, Message: "Carpeta de trabajo abierta. Lo que pongas aquí lo verás en Jupyter."}
+}
+
+// OpenJupyter opens Jupyter Lab in the default browser. The box's
+// quasar-start.sh launches Jupyter on :8888 (forwarded to the host); if 8888
+// was busy it falls back to 8889, so we probe both. Requires the VM running
+// with services started.
+func (a *App) OpenJupyter() ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	if st, _ := c.State(a.ctx); st != "running" {
+		return ActionResult{OK: false, Message: "La VM no está corriendo. Levántala y arranca los servicios (paso 5 y 6) antes de abrir Jupyter."}
+	}
+	url := a.jupyterURL()
+	if url == "" {
+		return ActionResult{OK: false, Message: "Jupyter no está respondiendo todavía. Asegúrate de haber iniciado los servicios (paso 6) y espera unos segundos."}
+	}
+	if err := desktop.OpenURL(url); err != nil {
+		a.sink.Emit("ERROR", "No pude abrir el navegador: "+err.Error())
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	a.sink.Emit("INFO", "Abriendo Jupyter Lab en "+url)
+	return ActionResult{OK: true, Message: "Jupyter Lab abierto en " + url}
+}
+
+// jupyterURL probes the forwarded Jupyter ports (8888, then 8889) and returns
+// the first that answers, or "" if none. Quiet HTTP check, no log spam.
+func (a *App) jupyterURL() string {
+	for _, port := range []int{8888, 8889} {
+		url := fmt.Sprintf("http://127.0.0.1:%d/lab", port)
+		ctx, cancel := context.WithTimeout(a.ctx, 2*time.Second)
+		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+		resp, err := http.DefaultClient.Do(req)
+		cancel()
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				return url
+			}
+		}
+	}
+	return ""
 }
 
 // OpenVagrantSSH opens an interactive SSH console window into the VM (user
