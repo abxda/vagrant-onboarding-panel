@@ -331,3 +331,15 @@ svg { width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
 .c-svc__state { font-size: var(--fs-xs); color: var(--color-text-muted); font-family: var(--font-mono); }
 .c-svcpanel__hint { font-size: var(--fs-sm); color: var(--color-text); display: flex; align-items: center; gap: var(--s-2); line-height: 1.5; margin-bottom: var(--s-3); }
 .c-svcpanel__hint svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--color-info); }
+
+/* Explorador HDFS (homologado con el portable) */
+.c-hdfs-tree { background-color: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--s-3); font-size: var(--fs-sm); max-height: 320px; overflow-y: auto; }
+.c-hdfs-node { margin: 2px 0; }
+.c-hdfs-node__row { cursor: pointer; padding: 4px 6px; border-radius: var(--radius-sm); user-select: none; }
+.c-hdfs-node__row:hover { background-color: var(--color-surface-2); }
+.c-hdfs-node__row svg { width: 16px; height: 16px; vertical-align: middle; }
+.c-hdfs-node__chev { display: inline-block; width: 12px; color: var(--color-text-muted); }
+.c-hdfs-node__children { padding-left: var(--s-5); }
+.c-hdfs-file { padding: 4px 6px; color: var(--color-text-muted); }
+.c-hdfs-file svg { width: 14px; height: 14px; vertical-align: middle; }
+.c-hdfs-empty { padding: 6px; color: var(--color-text-muted); font-style: italic; }

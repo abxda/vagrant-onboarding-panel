@@ -13,6 +13,7 @@ import (
 	"github.com/abxda/vagrant-onboarding-panel/internal/desktop"
 	"github.com/abxda/vagrant-onboarding-panel/internal/diagnose"
 	"github.com/abxda/vagrant-onboarding-panel/internal/elevate"
+	"github.com/abxda/vagrant-onboarding-panel/internal/hdfsfs"
 	"github.com/abxda/vagrant-onboarding-panel/internal/labexercise"
 	"github.com/abxda/vagrant-onboarding-panel/internal/logsink"
 	"github.com/abxda/vagrant-onboarding-panel/internal/runner"
@@ -800,6 +801,17 @@ func (a *App) OpenWorkFolder() ActionResult {
 	}
 	a.sink.Emit("INFO", "Carpeta de trabajo abierta: "+c.WorkDir+" (se monta en la VM como /vagrant y la ve Jupyter).")
 	return ActionResult{OK: true, Message: "Carpeta de trabajo abierta. Lo que pongas aquí lo verás en Jupyter."}
+}
+
+// ListHDFS lists a directory in HDFS via WebHDFS. The VM forwards the
+// NameNode UI/WebHDFS port (9870) to the host, so we hit 127.0.0.1:9870 —
+// the SAME WebHDFS client the portable launcher uses, for a homologated
+// HDFS browser. Returns the children of `path` (use "/" for root).
+func (a *App) ListHDFS(path string) ([]hdfsfs.Entry, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, 4*time.Second)
+	defer cancel()
+	c := hdfsfs.New("http://127.0.0.1:9870", "vagrant")
+	return c.List(ctx, path)
 }
 
 // OpenExerciseFolder opens the host-side folder where the exercise files

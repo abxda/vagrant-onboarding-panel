@@ -537,12 +537,22 @@ async function renderExercise() {
             </div>
             <p class="c-ex__intro">Cuenta cuántas veces aparece cada palabra en un dataset usando MapReduce (Hadoop Streaming) dentro de la VM. Puedes correr cada paso por separado y ver su salida en el registro de abajo, o ejecutar todo de una vez. Es el mismo ejercicio que en la versión portable.</p>
             ${rows}
+        </div>
+        <div class="c-ex" id="hdfsSection">
+            <div class="c-ex__head">
+                <span class="c-ex__title">${icon('folder')} Explorador de HDFS</span>
+                <div style="flex:1"></div>
+                <button class="c-btn" id="hdfsRefresh" ${vmRunning ? '' : 'disabled'}>${icon('refresh')} Actualizar</button>
+            </div>
+            <p class="c-ex__intro">Navega el sistema de archivos distribuido (HDFS) dentro de la VM. Haz click en una carpeta para abrirla. Aquí verás el input y el output del ejercicio.</p>
+            <div class="c-hdfs-tree" id="hdfsTree"><div class="c-hdfs-empty">Pulsa "Actualizar" para cargar HDFS.</div></div>
         </div>`;
 
     document.getElementById('exOpenFolder').addEventListener('click', async () => {
         const res = await window.go.main.App.OpenExerciseFolder();
         if (!res.ok) alert(res.message || 'No se pudo abrir la carpeta del ejercicio.');
     });
+    document.getElementById('hdfsRefresh').addEventListener('click', loadHdfsRoot);
     host.querySelectorAll('button[data-exrun]').forEach(b => {
         b.addEventListener('click', () => runExerciseStep(parseInt(b.dataset.exrun, 10), b));
     });
@@ -582,6 +592,64 @@ async function runExerciseStep(idx, btn) {
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = `${icon('play')} Ejecutar`; }
     }
+}
+
+/* ---------- Explorador HDFS (homologado con el portable) ------------------ */
+async function loadHdfsRoot() {
+    const tree = document.getElementById('hdfsTree');
+    if (!tree) return;
+    tree.innerHTML = `<div class="c-hdfs-empty"><span class="c-spinner-sm"></span> Cargando HDFS…</div>`;
+    try {
+        const entries = await window.go.main.App.ListHDFS('/');
+        tree.innerHTML = '';
+        if (!entries || !entries.length) {
+            tree.innerHTML = `<div class="c-hdfs-empty">HDFS está vacío (raíz /).</div>`;
+            return;
+        }
+        entries.forEach(e => tree.appendChild(hdfsNode(e, '/' + e.name)));
+    } catch (err) {
+        tree.innerHTML = `<div class="c-hdfs-empty">No pude leer HDFS: ${esc(String(err))}<br><span style="opacity:.7">¿Están los servicios arriba? (HDFS en :9870)</span></div>`;
+    }
+}
+
+function hdfsNode(entry, path) {
+    const node = document.createElement('div');
+    node.className = 'c-hdfs-node';
+    const isDir = entry.type === 'DIRECTORY';
+    if (!isDir) {
+        const kb = entry.length >= 1024 ? (entry.length / 1024).toFixed(1) + ' KB' : entry.length + ' B';
+        node.innerHTML = `<div class="c-hdfs-file">${icon('book')} ${esc(entry.name)} <span style="opacity:.6">· ${kb}</span></div>`;
+        return node;
+    }
+    node.innerHTML =
+        `<div class="c-hdfs-node__row" data-path="${esc(path)}">` +
+            `<span class="c-hdfs-node__chev">▶</span> ${icon('folder')} ${esc(entry.name)}` +
+        `</div>` +
+        `<div class="c-hdfs-node__children" style="display:none;"></div>`;
+    const row = node.querySelector('.c-hdfs-node__row');
+    const childrenEl = node.querySelector('.c-hdfs-node__children');
+    let loaded = false, expanded = false;
+    row.addEventListener('click', async () => {
+        expanded = !expanded;
+        row.querySelector('.c-hdfs-node__chev').textContent = expanded ? '▼' : '▶';
+        childrenEl.style.display = expanded ? 'block' : 'none';
+        if (expanded && !loaded) {
+            loaded = true;
+            childrenEl.innerHTML = `<div class="c-hdfs-empty"><span class="c-spinner-sm"></span> …</div>`;
+            try {
+                const kids = await window.go.main.App.ListHDFS(path);
+                childrenEl.innerHTML = '';
+                if (!kids || !kids.length) {
+                    childrenEl.innerHTML = `<div class="c-hdfs-empty">(carpeta vacía)</div>`;
+                } else {
+                    kids.forEach(k => childrenEl.appendChild(hdfsNode(k, path + '/' + k.name)));
+                }
+            } catch (err) {
+                childrenEl.innerHTML = `<div class="c-hdfs-empty">Error: ${esc(String(err))}</div>`;
+            }
+        }
+    });
+    return node;
 }
 
 async function testElevation() {
