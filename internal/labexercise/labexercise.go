@@ -64,9 +64,15 @@ type Step struct {
 
 // StartServicesCmd starts the box's Big Data stack (HDFS, Kafka, Elasticsearch,
 // Jupyter) using the bundled quasar-start.sh script. Run with sudo (passwordless
-// in the box). Idempotent enough: it cleans stale PIDs and the HDFS daemons
-// refuse to double-start.
-const StartServicesCmd = "sudo /usr/local/bin/quasar-start.sh"
+// in the box).
+//
+// CRITICAL: we redirect the script's stdio to a file inside the VM
+// (</dev/null >/tmp/... 2>&1). Without this the SSH channel never closes —
+// Elasticsearch (-d) and Jupyter (&) inherit the channel's stdout, so
+// `vagrant ssh -c` hangs until it times out. Redirecting detaches them and the
+// command returns immediately, leaving the daemons running in the background.
+// It also keeps the noisy ES/Jupyter boot logs out of the panel console.
+const StartServicesCmd = "sudo /usr/local/bin/quasar-start.sh </dev/null >/tmp/quasar-start.log 2>&1; echo 'Stack de servicios lanzado (detalle dentro de la VM en /tmp/quasar-start.log).'"
 
 // WaitHDFSCmd polls until the HDFS NameNode RPC answers (or ~90s elapse), so we
 // don't run the job before the daemons finished booting.

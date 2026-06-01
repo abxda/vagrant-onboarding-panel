@@ -460,14 +460,18 @@ func (a *App) runServicesAndExercise() ActionResult {
 
 	// Start the Big Data stack inside the VM (HDFS/Kafka/ES/Jupyter). The box
 	// does NOT auto-start these at boot — without this, the WordCount fails with
-	// "Connection refused" to the NameNode.
+	// "Connection refused" to the NameNode. Skip the start if HDFS is already up
+	// (avoids duplicating Jupyter on another port).
 	a.sink.Emit("INFO", strings.Repeat("─", 56))
-	a.sink.Emit("INFO", "Iniciando el stack de Big Data en la VM (HDFS, Kafka, Elasticsearch, Jupyter)…")
-	a.sink.Emit("INFO", "$ "+labexercise.StartServicesCmd)
-	if res, err := c.SSH(a.ctx, 5*time.Minute, labexercise.StartServicesCmd); err != nil || res.ExitCode != 0 {
-		a.failStep(id)
-		a.sink.Emit("ERROR", "No pude iniciar los servicios con quasar-start.sh.")
-		return ActionResult{Message: "Falló el arranque de los servicios en la VM."}
+	if svc, _ := c.Services(a.ctx); svc.HDFS {
+		a.sink.Emit("INFO", "Los servicios ya están corriendo en la VM (HDFS detectado). No reinicio nada.")
+	} else {
+		a.sink.Emit("INFO", "Iniciando el stack de Big Data en la VM (HDFS, Kafka, Elasticsearch, Jupyter)…")
+		if res, err := c.SSH(a.ctx, 5*time.Minute, labexercise.StartServicesCmd); err != nil || res.ExitCode != 0 {
+			a.failStep(id)
+			a.sink.Emit("ERROR", "No pude iniciar los servicios con quasar-start.sh.")
+			return ActionResult{Message: "Falló el arranque de los servicios en la VM."}
+		}
 	}
 	a.sink.Emit("INFO", "Esperando a que HDFS esté listo…")
 	if res, err := c.SSH(a.ctx, 3*time.Minute, labexercise.WaitHDFSCmd); err != nil || res.ExitCode != 0 {
