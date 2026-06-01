@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/abxda/vagrant-onboarding-panel/internal/desktop"
@@ -31,6 +32,10 @@ type App struct {
 	sink  *logsink.Sink
 	runr  *runner.Runner
 	state *state.State
+
+	// shuttingDown evita relanzar el apagado en el segundo beforeClose
+	// (el que dispara Quit al final de la secuencia graceful).
+	shuttingDown atomic.Bool
 }
 
 // NewApp constructs the App with its log sink and process runner.
@@ -53,9 +58,58 @@ func (a *App) startup(ctx context.Context) {
 	a.sink.Emit("INFO", fmt.Sprintf("Plataforma: %s/%s · Elevación: %s", runtime.GOOS, runtime.GOARCH, elevate.Mechanism()))
 }
 
-func (a *App) domReady(ctx context.Context)         {}
-func (a *App) beforeClose(ctx context.Context) bool { return false }
-func (a *App) shutdown(ctx context.Context)         {}
+func (a *App) domReady(ctx context.Context) {}
+
+// beforeClose intercepta el clic en la X. Cerrado elegante homologado con el
+// portable: al cerrar el panel, apagamos limpiamente la VM (detener servicios
+// + ACPI por nombre), para no dejar la VM consumiendo recursos ni los puertos
+// ocupados. Primer clic: prevenimos el cierre y lanzamos el apagado async con
+// un overlay; al terminar, Quit cierra de verdad (segundo paso, ya con
+// shuttingDown en true).
+func (a *App) beforeClose(ctx context.Context) bool {
+	if a.shuttingDown.Load() {
+		return false // segundo paso: dejar cerrar
+	}
+	// Si la VM no está corriendo, no hay nada que apagar: cerrar directo.
+	cctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	if !vagrant.VMIsRunning(cctx) {
+		return false
+	}
+	a.shuttingDown.Store(true)
+	go a.runGracefulShutdown()
+	return true // prevenir cierre mientras apagamos
+}
+
+func (a *App) shutdown(ctx context.Context) {}
+
+// runGracefulShutdown apaga la VM limpiamente mostrando un overlay de progreso
+// (homologado con el portable), y al terminar cierra la ventana.
+func (a *App) runGracefulShutdown() {
+	emit := func(phase, msg string) {
+		wruntime.EventsEmit(a.ctx, "shutdown:progress", map[string]string{"phase": phase, "msg": msg})
+	}
+	wruntime.EventsEmit(a.ctx, "shutdown:start", nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// 1) Detener servicios limpio (el panel conoce el directorio).
+	if c, err := a.vagrantClient(); err == nil {
+		if st, _ := c.State(ctx); st == "running" {
+			emit("services", "Deteniendo servicios (HDFS, Kafka, Elasticsearch, Jupyter)…")
+			_, _ = c.SSH(ctx, 2*time.Minute, labexercise.StopServicesCmd+" </dev/null >/tmp/quasar-stop.log 2>&1; echo ok")
+		}
+	}
+	// 2) Apagado ACPI por nombre.
+	emit("vm", "Apagando la máquina virtual de forma segura…")
+	_ = vagrant.PowerButton(ctx)
+	vagrant.WaitPoweredOff(ctx, 90*time.Second)
+
+	emit("done", "Listo.")
+	wruntime.EventsEmit(a.ctx, "shutdown:done", nil)
+	wruntime.Quit(a.ctx)
+}
 
 // --- types returned to the frontend -------------------------------------
 

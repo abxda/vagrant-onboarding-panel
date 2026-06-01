@@ -79,6 +79,38 @@ function wireEvents() {
         renderStatusStrip();
         if (MODE === 'lab' && LAB_TAB === 'servicios') renderLabServicios();
     });
+    // Cerrado elegante (homologado con el portable): al cerrar el panel se
+    // apaga la VM limpiamente y se muestra un overlay de progreso.
+    window.runtime.EventsOn('shutdown:start', () => showShutdownOverlay());
+    window.runtime.EventsOn('shutdown:progress', (d) => updateShutdownOverlay(d));
+    window.runtime.EventsOn('shutdown:done', () => {
+        const m = document.getElementById('shutdownMsg');
+        if (m) m.textContent = 'Máquina virtual apagada. Cerrando…';
+    });
+}
+
+function showShutdownOverlay() {
+    if (document.getElementById('shutdownOverlay')) return;
+    const o = document.createElement('div');
+    o.id = 'shutdownOverlay';
+    o.className = 'c-overlay';
+    o.innerHTML =
+        '<div class="c-overlay__box">' +
+            '<div class="c-spinner"></div>' +
+            '<h2 class="c-overlay__title">Cerrando de forma segura</h2>' +
+            '<p class="c-overlay__msg" id="shutdownMsg">Preparando el apagado…</p>' +
+            '<p class="c-overlay__note">' +
+                'Detenemos los servicios y apagamos la máquina virtual para no dejar nada ' +
+                'corriendo ni los puertos ocupados. Tu trabajo en HDFS se conserva. ' +
+                'Puede tardar ~30 segundos.' +
+            '</p>' +
+        '</div>';
+    document.body.appendChild(o);
+}
+
+function updateShutdownOverlay(d) {
+    const msg = document.getElementById('shutdownMsg');
+    if (msg && d && d.msg) msg.textContent = d.msg;
 }
 
 /* ---------- global progress --------------------------------------------- */
