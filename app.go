@@ -458,6 +458,24 @@ func (a *App) runServicesAndExercise() ActionResult {
 		a.sink.Emit("WARN", "No pude subir el ejercicio con 'vagrant upload'; continuaré por si ya estaba en la VM.")
 	}
 
+	// Start the Big Data stack inside the VM (HDFS/Kafka/ES/Jupyter). The box
+	// does NOT auto-start these at boot — without this, the WordCount fails with
+	// "Connection refused" to the NameNode.
+	a.sink.Emit("INFO", strings.Repeat("─", 56))
+	a.sink.Emit("INFO", "Iniciando el stack de Big Data en la VM (HDFS, Kafka, Elasticsearch, Jupyter)…")
+	a.sink.Emit("INFO", "$ "+labexercise.StartServicesCmd)
+	if res, err := c.SSH(a.ctx, 5*time.Minute, labexercise.StartServicesCmd); err != nil || res.ExitCode != 0 {
+		a.failStep(id)
+		a.sink.Emit("ERROR", "No pude iniciar los servicios con quasar-start.sh.")
+		return ActionResult{Message: "Falló el arranque de los servicios en la VM."}
+	}
+	a.sink.Emit("INFO", "Esperando a que HDFS esté listo…")
+	if res, err := c.SSH(a.ctx, 3*time.Minute, labexercise.WaitHDFSCmd); err != nil || res.ExitCode != 0 {
+		a.failStep(id)
+		a.sink.Emit("ERROR", "HDFS no respondió tras iniciar los servicios. Revisa el registro.")
+		return ActionResult{Message: "HDFS no quedó listo a tiempo."}
+	}
+
 	// Run the WordCount playbook.
 	steps := labexercise.Steps()
 	a.sink.Emit("INFO", "Ejecutando el Ejercicio_01 (WordCount) dentro de la VM, paso a paso:")
@@ -613,6 +631,36 @@ func isSpinnerLine(s string) bool {
 func (a *App) ResetWizard() {
 	a.state.Reset()
 	a.sink.Emit("INFO", "Progreso del asistente reiniciado.")
+}
+
+// OpenVagrantSSH opens an interactive SSH console window into the VM (user
+// vagrant). Requires the VM to exist; if it's not running we still try (the
+// student may want to start it manually). Returns an actionable error.
+func (a *App) OpenVagrantSSH() ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	if st, _ := c.State(a.ctx); st != "running" {
+		return ActionResult{OK: false, Message: "La VM no está corriendo (estado: " + st + "). Levántala en el paso 5 antes de abrir la consola SSH."}
+	}
+	if err := c.OpenInteractiveSSH(); err != nil {
+		a.sink.Emit("ERROR", "No pude abrir la consola SSH: "+err.Error())
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	a.sink.Emit("INFO", "Abriendo consola SSH a la VM (usuario: vagrant)…")
+	return ActionResult{OK: true, Message: "Consola SSH abierta en una ventana nueva."}
+}
+
+// VMState returns the current Vagrant VM state for the UI ("running",
+// "poweroff", "not_created", …). Empty string if Vagrant isn't ready.
+func (a *App) VMState() string {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ""
+	}
+	st, _ := c.State(a.ctx)
+	return st
 }
 
 // --- helpers ------------------------------------------------------------

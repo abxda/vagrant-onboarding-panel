@@ -16,6 +16,7 @@ const ICONS = {
     lock:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
     trash:    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
     copy:     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
+    terminal: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>',
 };
 function icon(name) { return ICONS[name] || ICONS.info; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -44,6 +45,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     // initial log paint
     const snap = await window.go.main.App.GetLogSnapshot();
     snap.forEach(appendLog);
+    // live VM state indicator: refresh now and then on an interval
+    refreshVMState();
+    setInterval(refreshVMState, 12000);
 });
 
 function wireEvents() {
@@ -93,8 +97,11 @@ function renderNav() {
 function renderHeaderActions() {
     const el = document.getElementById('viewActions');
     el.innerHTML =
+        `<span class="c-vmstate" id="vmState" title="Estado de la máquina virtual">${vmBadgeHTML(LAST_VM_STATE)}</span>` +
+        `<button class="c-btn" id="btnSSH">${icon('terminal')} Abrir consola SSH</button>` +
         `<button class="c-btn" id="btnTestElev">${icon('shield')} Probar elevación</button>` +
         `<button class="c-btn" id="btnReset">${icon('trash')} Reiniciar progreso</button>`;
+    document.getElementById('btnSSH').addEventListener('click', openSSH);
     document.getElementById('btnTestElev').addEventListener('click', testElevation);
     document.getElementById('btnReset').addEventListener('click', async () => {
         if (!confirm('¿Reiniciar el progreso del asistente? No se desinstala nada; solo se olvidan los pasos marcados como completos.')) return;
@@ -338,6 +345,43 @@ function setResult(kind, html) {
     if (!el) return;
     if (!kind) { el.innerHTML = ''; return; }
     el.innerHTML = `<div class="c-result c-result--${kind}">${html}</div>`;
+}
+
+/* ---------- VM state indicator (live) ------------------------------------ */
+let LAST_VM_STATE = '';
+const VM_LABELS = {
+    running:     { cls: 'ok',    text: 'VM encendida' },
+    poweroff:    { cls: 'muted', text: 'VM apagada' },
+    not_created: { cls: 'muted', text: 'VM no creada' },
+    saved:       { cls: 'warn',  text: 'VM suspendida' },
+    aborted:     { cls: 'danger',text: 'VM abortada' },
+    '':          { cls: 'muted', text: 'VM —' },
+};
+function vmBadgeHTML(state) {
+    const m = VM_LABELS[state] || { cls: 'muted', text: 'VM: ' + (state || '—') };
+    const dot = m.cls === 'ok' ? 'c-dot--ok' : m.cls === 'warn' ? 'c-dot--warn' : m.cls === 'danger' ? 'c-dot--danger' : 'c-dot--muted';
+    return `<span class="c-dot ${dot}"></span>${esc(m.text)}`;
+}
+async function refreshVMState() {
+    try {
+        const st = await window.go.main.App.VMState();
+        if (st !== LAST_VM_STATE) {
+            LAST_VM_STATE = st;
+            const el = document.getElementById('vmState');
+            if (el) el.innerHTML = vmBadgeHTML(st);
+        }
+    } catch (e) { /* vagrant not ready yet — ignore */ }
+}
+
+async function openSSH() {
+    const btn = document.getElementById('btnSSH');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="c-spinner-sm"></span> Abriendo…'; }
+    try {
+        const res = await window.go.main.App.OpenVagrantSSH();
+        if (!res.ok) alert(res.message || 'No se pudo abrir la consola SSH.');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('terminal')} Abrir consola SSH`; }
+    }
 }
 
 async function testElevation() {

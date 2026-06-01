@@ -62,6 +62,19 @@ type Step struct {
 	Cmd   string // the shell command executed via `vagrant ssh -c`
 }
 
+// StartServicesCmd starts the box's Big Data stack (HDFS, Kafka, Elasticsearch,
+// Jupyter) using the bundled quasar-start.sh script. Run with sudo (passwordless
+// in the box). Idempotent enough: it cleans stale PIDs and the HDFS daemons
+// refuse to double-start.
+const StartServicesCmd = "sudo /usr/local/bin/quasar-start.sh"
+
+// WaitHDFSCmd polls until the HDFS NameNode RPC answers (or ~90s elapse), so we
+// don't run the job before the daemons finished booting.
+const WaitHDFSCmd = `for i in $(seq 1 45); do hdfs dfsadmin -safemode get >/dev/null 2>&1 && { echo "HDFS responde."; exit 0; }; echo "esperando a HDFS... ($i)"; sleep 2; done; echo "HDFS no respondió a tiempo"; exit 1`
+
+// StopServicesCmd stops the stack (used by the SSH console help / future halt).
+const StopServicesCmd = "sudo /usr/local/bin/quasar-stop.sh"
+
 // Steps returns the ordered WordCount playbook for execution inside the VM.
 // Every command runs as the `vagrant` user over SSH.
 //
@@ -104,7 +117,7 @@ func Steps() []Step {
 			Title: "5 · Ejecutar el job MapReduce vía Hadoop Streaming",
 			Notes: "Hadoop Streaming pasa cada línea al stdin del mapper y su stdout al reducer. Forzamos LocalJobRunner (sin YARN) y usamos python3 (Debian 11 no tiene 'python' a secas).",
 			Cmd: addOpens + "; " +
-				"hadoop jar $(ls /opt/hadoop*/share/hadoop/tools/lib/hadoop-streaming-*.jar 2>/dev/null | head -1 || find / -name 'hadoop-streaming-*.jar' 2>/dev/null | head -1) " +
+				"hadoop jar $(ls /opt/bdpv5/hadoop/share/hadoop/tools/lib/hadoop-streaming-*.jar 2>/dev/null | head -1) " +
 				"-D mapreduce.framework.name=local " +
 				"-D mapreduce.jobtracker.address=local " +
 				"-mapper 'python3 " + RemoteDir + "/mapper.py' " +

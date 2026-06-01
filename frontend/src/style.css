@@ -255,6 +255,23 @@ svg { width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
 }
 @keyframes c-spin { to { transform: rotate(360deg); } }
 
+/* VM state indicator (header) */
+.c-vmstate {
+    display: inline-flex; align-items: center; gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font-size: var(--fs-sm); color: var(--color-text-muted);
+    background: var(--color-surface-2);
+    white-space: nowrap;
+}
+.c-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.c-dot--ok     { background: var(--color-success); box-shadow: 0 0 0 3px rgba(22,163,74,0.18); animation: c-pulse 2s ease-in-out infinite; }
+.c-dot--warn   { background: var(--color-warn); }
+.c-dot--danger { background: var(--color-danger); }
+.c-dot--muted  { background: #94a3b8; }
+@keyframes c-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
 /* Diagnostic probe rows */
 .c-diag { margin-top: var(--s-4); display: flex; flex-direction: column; gap: var(--s-2); }
 .c-diag__row {
