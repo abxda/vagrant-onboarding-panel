@@ -1,0 +1,10 @@
+# The exercise files run inside a Debian 11 VM — they MUST stay LF, never
+# CRLF, or Python/Hadoop choke on the carriage returns. Force LF regardless
+# of the contributor's core.autocrlf setting.
+internal/labexercise/files/ejercicio_01/* text eol=lf
+*.py  text eol=lf
+*.csv text eol=lf
+*.sh  text eol=lf
+
+# Go sources: normalize to LF too (consistent across Win/Mac/Linux agents).
+*.go  text eol=lf

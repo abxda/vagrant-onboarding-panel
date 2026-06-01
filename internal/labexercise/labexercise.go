@@ -9,6 +9,7 @@
 package labexercise
 
 import (
+	"bytes"
 	"embed"
 	"os"
 	"path/filepath"
@@ -41,6 +42,11 @@ func Materialize(destDir string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Normalize CRLF → LF. These files run inside a Debian 11 VM; a stray
+		// carriage return would corrupt the CSV tokens and could break the
+		// Python scripts. This guarantees LF no matter how the repo was
+		// checked out (autocrlf, Windows clone, etc.).
+		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 		if err := os.WriteFile(filepath.Join(destDir, e.Name()), data, 0o644); err != nil {
 			return nil, err
 		}
