@@ -11,9 +11,12 @@ import (
 
 	"github.com/abxda/vagrant-onboarding-panel/internal/diagnose"
 	"github.com/abxda/vagrant-onboarding-panel/internal/elevate"
+	"github.com/abxda/vagrant-onboarding-panel/internal/labexercise"
 	"github.com/abxda/vagrant-onboarding-panel/internal/logsink"
+	"github.com/abxda/vagrant-onboarding-panel/internal/runner"
 	"github.com/abxda/vagrant-onboarding-panel/internal/state"
 	"github.com/abxda/vagrant-onboarding-panel/internal/tools"
+	"github.com/abxda/vagrant-onboarding-panel/internal/vagrant"
 	"github.com/abxda/vagrant-onboarding-panel/internal/wizard"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -23,13 +26,16 @@ import (
 type App struct {
 	ctx   context.Context
 	sink  *logsink.Sink
+	runr  *runner.Runner
 	state *state.State
 }
 
-// NewApp constructs the App with its log sink.
+// NewApp constructs the App with its log sink and process runner.
 func NewApp() *App {
+	sink := logsink.New(4000)
 	return &App{
-		sink: logsink.New(4000),
+		sink: sink,
+		runr: runner.New(sink),
 	}
 }
 
@@ -234,6 +240,35 @@ func (a *App) CheckStep(stepID string) string {
 		a.emitStepStatus(stepID, st)
 		return st
 	}
+	if id == wizard.StepBox || id == wizard.StepUp {
+		c, err := a.vagrantClient()
+		if err != nil {
+			a.sink.Emit("WARN", err.Error())
+			a.state.SetStatus(stepID, string(wizard.StatusError))
+			a.emitStepStatus(stepID, string(wizard.StatusError))
+			return string(wizard.StatusError)
+		}
+		st := string(wizard.StatusError)
+		if id == wizard.StepBox {
+			if added, _ := c.BoxAdded(a.ctx); added {
+				st = string(wizard.StatusOK)
+				a.sink.Emit("INFO", "La caja "+vagrant.BoxName+" está añadida.")
+			} else {
+				a.sink.Emit("WARN", "La caja "+vagrant.BoxName+" todavía no está añadida.")
+			}
+		} else {
+			vmState, _ := c.State(a.ctx)
+			if vmState == "running" {
+				st = string(wizard.StatusOK)
+				a.sink.Emit("INFO", "La VM está corriendo.")
+			} else {
+				a.sink.Emit("WARN", "La VM no está corriendo (estado: "+vmState+").")
+			}
+		}
+		a.state.SetStatus(stepID, st)
+		a.emitStepStatus(stepID, st)
+		return st
+	}
 	a.sink.Emit("INFO", "Verificando paso: "+stepID+" (verificación real llega en el siguiente checkpoint)")
 	st := a.state.Status(stepID)
 	if st == "" {
@@ -276,17 +311,187 @@ func (a *App) RunStep(stepID string) ActionResult {
 		return a.installTool(id)
 	}
 
-	// Steps 4-6 (box/up/servidores) remain mocked until CP4.
-	a.state.SetStatus(stepID, string(wizard.StatusRunning))
-	a.emitStepStatus(stepID, string(wizard.StatusRunning))
-	for i := 1; i <= 3; i++ {
-		a.sink.Emit("INFO", fmt.Sprintf("  … trabajo simulado %d/3", i))
-		time.Sleep(250 * time.Millisecond)
+	// Steps 4-6 are real Vagrant operations.
+	switch id {
+	case wizard.StepBox:
+		return a.runAddBox()
+	case wizard.StepUp:
+		return a.runVagrantUp()
+	case wizard.StepServidores:
+		return a.runServicesAndExercise()
 	}
-	a.state.SetStatus(stepID, string(wizard.StatusOK))
-	a.emitStepStatus(stepID, string(wizard.StatusOK))
-	a.sink.Emit("INFO", "✓ Paso completado (simulado, llega real en CP4): "+stepID)
-	return ActionResult{OK: true, Message: "Paso completado (simulado)."}
+	return ActionResult{OK: false, Message: "Paso desconocido: " + stepID}
+}
+
+// --- CP4: Vagrant steps -------------------------------------------------
+
+// vagrantClient resolves the vagrant binary and working directory, creating
+// the working dir if needed.
+func (a *App) vagrantClient() (*vagrant.Client, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	defer cancel()
+	info := tools.DetectVagrant(ctx)
+	if !info.Installed {
+		return nil, fmt.Errorf("Vagrant no está instalado; completa el paso 3 primero")
+	}
+	workdir := a.state.VagrantDir
+	if workdir == "" {
+		workdir = vagrant.DefaultWorkDir()
+		a.state.SetVagrantDir(workdir)
+	}
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		return nil, fmt.Errorf("no pude crear el directorio de trabajo %s: %w", workdir, err)
+	}
+	return vagrant.NewClient(info.Path, workdir, a.runr), nil
+}
+
+// runAddBox materialises the exercise + Vagrantfile, then downloads the lab box.
+func (a *App) runAddBox() ActionResult {
+	id := wizard.StepBox
+	a.markRunning(id)
+	c, err := a.vagrantClient()
+	if err != nil {
+		a.failStep(id)
+		a.sink.Emit("ERROR", err.Error())
+		return ActionResult{Message: err.Error()}
+	}
+
+	// Materialise the embedded exercise next to the Vagrantfile.
+	exDir := filepath.Join(c.WorkDir, "ejercicio_01")
+	if written, err := labexercise.Materialize(exDir); err != nil {
+		a.failStep(id)
+		a.sink.Emit("ERROR", "No pude escribir el ejercicio: "+err.Error())
+		return ActionResult{Message: "No pude preparar el ejercicio."}
+	} else {
+		a.sink.Emit("INFO", "Ejercicio_01 preparado: "+strings.Join(written, ", "))
+	}
+	if err := c.EnsureVagrantfile(); err != nil {
+		a.failStep(id)
+		a.sink.Emit("ERROR", "No pude generar el Vagrantfile: "+err.Error())
+		return ActionResult{Message: "No pude generar el Vagrantfile."}
+	}
+	a.sink.Emit("INFO", "Vagrantfile generado en "+c.WorkDir)
+
+	if added, _ := c.BoxAdded(a.ctx); added {
+		a.sink.Emit("INFO", "La caja "+vagrant.BoxName+" ya estaba añadida.")
+		a.okStep(id)
+		return ActionResult{OK: true, Message: "La caja ya estaba añadida."}
+	}
+
+	a.sink.Emit("INFO", "Descargando la caja "+vagrant.BoxName+" (~4.4 GB). Puede tardar varios minutos según tu conexión…")
+	res, err := c.AddBox(a.ctx)
+	if err != nil {
+		a.failStep(id)
+		a.sink.Emit("ERROR", "Error en vagrant box add: "+err.Error())
+		return ActionResult{Message: "Falló la descarga de la caja.", Detail: err.Error()}
+	}
+	if res.ExitCode != 0 {
+		a.failStep(id)
+		return ActionResult{Message: fmt.Sprintf("vagrant box add terminó con código %d. Revisa el registro.", res.ExitCode)}
+	}
+	if added, _ := c.BoxAdded(a.ctx); added {
+		a.okStep(id)
+		a.sink.Emit("INFO", "✓ Caja añadida correctamente.")
+		return ActionResult{OK: true, Message: "Caja añadida correctamente."}
+	}
+	a.failStep(id)
+	return ActionResult{Message: "La caja no aparece tras la descarga."}
+}
+
+// runVagrantUp boots the VM.
+func (a *App) runVagrantUp() ActionResult {
+	id := wizard.StepUp
+	a.markRunning(id)
+	c, err := a.vagrantClient()
+	if err != nil {
+		a.failStep(id)
+		a.sink.Emit("ERROR", err.Error())
+		return ActionResult{Message: err.Error()}
+	}
+	_ = c.EnsureVagrantfile()
+
+	if st, _ := c.State(a.ctx); st == "running" {
+		a.sink.Emit("INFO", "La VM ya está corriendo.")
+		a.okStep(id)
+		return ActionResult{OK: true, Message: "La VM ya estaba corriendo."}
+	}
+
+	a.sink.Emit("INFO", "Levantando la VM con 'vagrant up'. El primer arranque puede tardar varios minutos (VirtualBox correrá sobre Hyper-V, en modo compatibilidad)…")
+	if _, err := c.Up(a.ctx); err != nil {
+		a.failStep(id)
+		a.sink.Emit("ERROR", "Error en vagrant up: "+err.Error())
+		return ActionResult{Message: "Falló el arranque de la VM.", Detail: err.Error()}
+	}
+	st, _ := c.State(a.ctx)
+	if st == "running" {
+		a.okStep(id)
+		a.sink.Emit("INFO", "✓ VM levantada y en ejecución.")
+		return ActionResult{OK: true, Message: "VM levantada y corriendo."}
+	}
+	a.failStep(id)
+	return ActionResult{Message: "La VM no quedó en estado 'running' (estado: " + st + "). Revisa el registro."}
+}
+
+// runServicesAndExercise uploads the exercise into the VM and runs the
+// WordCount playbook step by step via `vagrant ssh -c`.
+func (a *App) runServicesAndExercise() ActionResult {
+	id := wizard.StepServidores
+	a.markRunning(id)
+	c, err := a.vagrantClient()
+	if err != nil {
+		a.failStep(id)
+		a.sink.Emit("ERROR", err.Error())
+		return ActionResult{Message: err.Error()}
+	}
+
+	if st, _ := c.State(a.ctx); st != "running" {
+		a.failStep(id)
+		msg := "La VM no está corriendo (estado: " + st + "). Ejecuta el paso 5 primero."
+		a.sink.Emit("ERROR", msg)
+		return ActionResult{Message: msg}
+	}
+
+	// Upload the exercise into the VM (SCP — no Guest Additions needed).
+	exDir := filepath.Join(c.WorkDir, "ejercicio_01")
+	a.sink.Emit("INFO", "Subiendo el Ejercicio_01 a la VM ("+labexercise.RemoteDir+")…")
+	if res, err := c.Upload(a.ctx, exDir, labexercise.RemoteDir); err != nil || res.ExitCode != 0 {
+		a.sink.Emit("WARN", "No pude subir el ejercicio con 'vagrant upload'; continuaré por si ya estaba en la VM.")
+	}
+
+	// Run the WordCount playbook.
+	steps := labexercise.Steps()
+	a.sink.Emit("INFO", "Ejecutando el Ejercicio_01 (WordCount) dentro de la VM, paso a paso:")
+	for i, s := range steps {
+		a.sink.Emit("INFO", strings.Repeat("─", 56))
+		a.sink.Emit("INFO", fmt.Sprintf("[%d/%d] %s", i+1, len(steps), s.Title))
+		if s.Notes != "" {
+			a.sink.Emit("INFO", "  ↳ "+s.Notes)
+		}
+		a.sink.Emit("INFO", "$ "+s.Cmd)
+		res, err := c.SSH(a.ctx, 20*time.Minute, s.Cmd)
+		if err != nil {
+			a.failStep(id)
+			a.sink.Emit("ERROR", "Error: "+err.Error())
+			return ActionResult{Message: fmt.Sprintf("El paso %d del ejercicio falló: %v", i+1, err)}
+		}
+		if res.ExitCode != 0 {
+			a.failStep(id)
+			return ActionResult{Message: fmt.Sprintf("El paso %d del ejercicio (%s) terminó con código %d. Revisa el registro.", i+1, s.Title, res.ExitCode)}
+		}
+	}
+	a.okStep(id)
+	a.sink.Emit("INFO", "✓ Ejercicio_01 (WordCount) completado dentro de la VM.")
+	return ActionResult{OK: true, Message: "Servicios verificados y Ejercicio_01 completado en la VM."}
+}
+
+func (a *App) markRunning(id wizard.StepID) {
+	a.state.SetStatus(string(id), string(wizard.StatusRunning))
+	a.emitStepStatus(string(id), string(wizard.StatusRunning))
+}
+
+func (a *App) okStep(id wizard.StepID) {
+	a.state.SetStatus(string(id), string(wizard.StatusOK))
+	a.emitStepStatus(string(id), string(wizard.StatusOK))
 }
 
 // installTool performs the real detect → (maybe) elevated install → re-detect
