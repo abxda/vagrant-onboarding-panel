@@ -17,7 +17,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "Panel de Onboarding · Big Data Lab (Vagrant)",
+		Title:     "Big Data Lab · Edición Vagrant",
 		Width:     1200,
 		Height:    820,
 		MinWidth:  980,
