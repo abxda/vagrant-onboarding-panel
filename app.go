@@ -327,11 +327,11 @@ func (a *App) installTool(id wizard.StepID) ActionResult {
 	ctx, cancel := context.WithTimeout(a.ctx, 25*time.Minute)
 	defer cancel()
 	res, err := elevate.Run(ctx, req)
-	if res.Stdout != "" {
-		a.sink.Emit("INFO", res.Stdout)
+	for _, ln := range sanitizeInstallerOutput(res.Stdout) {
+		a.sink.Emit("INFO", ln)
 	}
-	if res.Stderr != "" {
-		a.sink.Emit("WARN", res.Stderr)
+	for _, ln := range sanitizeInstallerOutput(res.Stderr) {
+		a.sink.Emit("WARN", ln)
 	}
 	if err != nil {
 		a.failStep(id)
@@ -362,6 +362,46 @@ func (a *App) installTool(id wizard.StepID) ActionResult {
 func (a *App) failStep(id wizard.StepID) {
 	a.state.SetStatus(string(id), string(wizard.StatusError))
 	a.emitStepStatus(string(id), string(wizard.StatusError))
+}
+
+// sanitizeInstallerOutput strips the visual noise package managers like winget
+// emit (animated progress bars and spinner frames) so the live log — and the
+// "Copiar consola" report a student sends to the teacher — stays readable.
+// We keep the meaningful lines (Found …, Downloading …, Successfully installed).
+func sanitizeInstallerOutput(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, ln := range strings.Split(raw, "\n") {
+		t := strings.TrimSpace(strings.TrimRight(ln, "\r"))
+		if t == "" {
+			continue
+		}
+		// Drop progress-bar lines (block-drawing chars) entirely; the
+		// "Downloading <url>" line already tells the student what's happening.
+		if strings.ContainsAny(t, "▒█░▓") {
+			continue
+		}
+		// Drop spinner-only frames ("- \ | /" possibly with surrounding spaces).
+		if isSpinnerLine(t) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+func isSpinnerLine(s string) bool {
+	for _, r := range s {
+		switch r {
+		case '-', '\\', '|', '/', ' ', '\t':
+			// spinner glyph or whitespace; keep scanning
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ResetWizard clears all persisted progress.
