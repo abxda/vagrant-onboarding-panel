@@ -480,6 +480,7 @@ func (a *App) runServicesAndExercise() ActionResult {
 	steps := labexercise.Steps()
 	a.sink.Emit("INFO", "Ejecutando el Ejercicio_01 (WordCount) dentro de la VM, paso a paso:")
 	for i, s := range steps {
+		a.emitExerciseProgress(i+1, len(steps), s.Title)
 		a.sink.Emit("INFO", strings.Repeat("─", 56))
 		a.sink.Emit("INFO", fmt.Sprintf("[%d/%d] %s", i+1, len(steps), s.Title))
 		if s.Notes != "" {
@@ -489,14 +490,17 @@ func (a *App) runServicesAndExercise() ActionResult {
 		res, err := c.SSH(a.ctx, 20*time.Minute, s.Cmd)
 		if err != nil {
 			a.failStep(id)
+			a.emitExerciseProgress(0, 0, "")
 			a.sink.Emit("ERROR", "Error: "+err.Error())
 			return ActionResult{Message: fmt.Sprintf("El paso %d del ejercicio falló: %v", i+1, err)}
 		}
 		if res.ExitCode != 0 {
 			a.failStep(id)
+			a.emitExerciseProgress(0, 0, "")
 			return ActionResult{Message: fmt.Sprintf("El paso %d del ejercicio (%s) terminó con código %d. Revisa el registro.", i+1, s.Title, res.ExitCode)}
 		}
 	}
+	a.emitExerciseProgress(0, 0, "") // clear
 	a.okStep(id)
 	a.sink.Emit("INFO", "✓ Ejercicio_01 (WordCount) completado dentro de la VM.")
 	return ActionResult{OK: true, Message: "Servicios verificados y Ejercicio_01 completado en la VM."}
@@ -652,21 +656,43 @@ func (a *App) OpenVagrantSSH() ActionResult {
 	return ActionResult{OK: true, Message: "Consola SSH abierta en una ventana nueva."}
 }
 
-// VMState returns the current Vagrant VM state for the UI ("running",
-// "poweroff", "not_created", …). Empty string if Vagrant isn't ready.
-func (a *App) VMState() string {
+// Dashboard is the always-on status header: VM state + which services are up.
+type Dashboard struct {
+	VMState  string            `json:"vmState"`
+	Services vagrant.Services  `json:"services"`
+	HasVM    bool              `json:"hasVM"` // true once the VM exists (created)
+}
+
+// GetDashboard returns the live status for the persistent header. All probes
+// run QUIETLY (no log spam). When the VM isn't running, service checks are
+// skipped (everything false). Designed to be polled every ~15s by the UI.
+func (a *App) GetDashboard() Dashboard {
 	c, err := a.vagrantClient()
 	if err != nil {
-		return ""
+		return Dashboard{VMState: ""}
 	}
 	st, _ := c.State(a.ctx)
-	return st
+	d := Dashboard{VMState: st, HasVM: st != "" && st != "not_created"}
+	if st == "running" {
+		if svc, err := c.Services(a.ctx); err == nil {
+			d.Services = svc
+		}
+	}
+	return d
 }
 
 // --- helpers ------------------------------------------------------------
 
 func (a *App) emitStepStatus(stepID, status string) {
 	wruntime.EventsEmit(a.ctx, "step:status", map[string]string{"id": stepID, "status": status})
+}
+
+// emitExerciseProgress tells the UI which WordCount sub-step is running.
+// current=0 clears the indicator.
+func (a *App) emitExerciseProgress(current, total int, title string) {
+	wruntime.EventsEmit(a.ctx, "exercise:progress", map[string]interface{}{
+		"current": current, "total": total, "title": title,
+	})
 }
 
 // elevatedRequestFor returns the (placeholder) elevated install command for a

@@ -36,12 +36,23 @@ func New(sink *logsink.Sink) *Runner { return &Runner{sink: sink} }
 // sink (stdout as INFO, stderr as WARN) and also returning the captured
 // text. A non-zero exit is NOT an error here — inspect Result.ExitCode.
 func (r *Runner) Run(ctx context.Context, timeout time.Duration, name string, args ...string) (Result, error) {
-	return r.RunDir(ctx, timeout, "", name, args...)
+	return r.runDir(ctx, timeout, "", true, name, args...)
 }
 
 // RunDir is like Run but sets the working directory (needed for Vagrant, which
 // locates its Vagrantfile via the current directory).
 func (r *Runner) RunDir(ctx context.Context, timeout time.Duration, dir, name string, args ...string) (Result, error) {
+	return r.runDir(ctx, timeout, dir, true, name, args...)
+}
+
+// RunDirQuiet runs a command WITHOUT streaming anything to the log sink. Used
+// for frequent background probes (vagrant status, box list, jps) so they don't
+// flood the live console. The captured output is still returned for parsing.
+func (r *Runner) RunDirQuiet(ctx context.Context, timeout time.Duration, dir, name string, args ...string) (Result, error) {
+	return r.runDir(ctx, timeout, dir, false, name, args...)
+}
+
+func (r *Runner) runDir(ctx context.Context, timeout time.Duration, dir string, stream bool, name string, args ...string) (Result, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
@@ -57,13 +68,17 @@ func (r *Runner) RunDir(ctx context.Context, timeout time.Duration, dir, name st
 	stdoutPipe, _ := cmd.StdoutPipe()
 	stderrPipe, _ := cmd.StderrPipe()
 
-	if r.sink != nil {
-		r.sink.Emit("INFO", "$ "+quoteCmd(name, args))
+	sink := r.sink
+	if !stream {
+		sink = nil // quiet mode: capture but don't emit
+	}
+	if sink != nil {
+		sink.Emit("INFO", "$ "+quoteCmd(name, args))
 	}
 
 	if err := cmd.Start(); err != nil {
-		if r.sink != nil {
-			r.sink.Emit("ERROR", "No se pudo iniciar: "+err.Error())
+		if sink != nil {
+			sink.Emit("ERROR", "No se pudo iniciar: "+err.Error())
 		}
 		return Result{ExitCode: -1}, err
 	}
@@ -71,8 +86,8 @@ func (r *Runner) RunDir(ctx context.Context, timeout time.Duration, dir, name st
 	var outBuf, errBuf strings.Builder
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); r.pump(stdoutPipe, "INFO", &outBuf) }()
-	go func() { defer wg.Done(); r.pump(stderrPipe, "WARN", &errBuf) }()
+	go func() { defer wg.Done(); pump(stdoutPipe, sink, "INFO", &outBuf) }()
+	go func() { defer wg.Done(); pump(stderrPipe, sink, "WARN", &errBuf) }()
 	wg.Wait()
 
 	err := cmd.Wait()
@@ -98,7 +113,7 @@ func (r *Runner) RunDir(ctx context.Context, timeout time.Duration, dir, name st
 	return res, nil
 }
 
-func (r *Runner) pump(rc io.Reader, level string, buf *strings.Builder) {
+func pump(rc io.Reader, sink *logsink.Sink, level string, buf *strings.Builder) {
 	if rc == nil {
 		return
 	}
@@ -108,8 +123,8 @@ func (r *Runner) pump(rc io.Reader, level string, buf *strings.Builder) {
 		line := strings.TrimRight(sc.Text(), "\r")
 		buf.WriteString(line)
 		buf.WriteByte('\n')
-		if r.sink != nil {
-			r.sink.Emit(level, line)
+		if sink != nil {
+			sink.Emit(level, line)
 		}
 	}
 }

@@ -32,9 +32,10 @@ func NewClient(bin, workDir string, r *runner.Runner) *Client {
 	return &Client{Bin: bin, WorkDir: workDir, r: r}
 }
 
-// BoxAdded reports whether the lab box is already registered locally.
+// BoxAdded reports whether the lab box is already registered locally. Quiet:
+// this is polled, so it must not flood the log.
 func (c *Client) BoxAdded(ctx context.Context) (bool, error) {
-	res, err := c.r.RunDir(ctx, 30*time.Second, c.WorkDir, c.Bin, "box", "list")
+	res, err := c.r.RunDirQuiet(ctx, 30*time.Second, c.WorkDir, c.Bin, "box", "list")
 	if err != nil {
 		return false, err
 	}
@@ -63,9 +64,9 @@ func (c *Client) Up(ctx context.Context) (runner.Result, error) {
 }
 
 // State returns the VM state ("running", "poweroff", "not_created", …) parsed
-// from `vagrant status --machine-readable`.
+// from `vagrant status --machine-readable`. Quiet: polled by the dashboard.
 func (c *Client) State(ctx context.Context) (string, error) {
-	res, err := c.r.RunDir(ctx, 60*time.Second, c.WorkDir, c.Bin, "status", "--machine-readable")
+	res, err := c.r.RunDirQuiet(ctx, 60*time.Second, c.WorkDir, c.Bin, "status", "--machine-readable")
 	if err != nil {
 		return "", err
 	}
@@ -77,6 +78,32 @@ func (c *Client) State(ctx context.Context) (string, error) {
 		}
 	}
 	return "unknown", nil
+}
+
+// Services reports which Big Data daemons are running inside the VM, probed
+// quietly (no log spam) via a single `jps` + jupyter check over SSH. Only call
+// when the VM is running. A short timeout keeps the dashboard responsive.
+type Services struct {
+	HDFS    bool `json:"hdfs"`    // NameNode + DataNode both present
+	Kafka   bool `json:"kafka"`
+	Elastic bool `json:"elastic"`
+	Jupyter bool `json:"jupyter"`
+}
+
+func (c *Client) Services(ctx context.Context) (Services, error) {
+	// One round-trip: jps lists Java daemons; the pgrep tags Jupyter.
+	cmd := "jps; pgrep -f jupyter-lab >/dev/null 2>&1 && echo JUPYTER_UP || true"
+	res, err := c.r.RunDirQuiet(ctx, 25*time.Second, c.WorkDir, c.Bin, "ssh", "-c", cmd)
+	if err != nil {
+		return Services{}, err
+	}
+	out := res.Stdout
+	return Services{
+		HDFS:    strings.Contains(out, "NameNode") && strings.Contains(out, "DataNode"),
+		Kafka:   strings.Contains(out, "Kafka"),
+		Elastic: strings.Contains(out, "Elasticsearch"),
+		Jupyter: strings.Contains(out, "JUPYTER_UP"),
+	}, nil
 }
 
 // Upload copies a host path into the guest via `vagrant upload` (uses SCP, so

@@ -45,9 +45,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     // initial log paint
     const snap = await window.go.main.App.GetLogSnapshot();
     snap.forEach(appendLog);
-    // live VM state indicator: refresh now and then on an interval
-    refreshVMState();
-    setInterval(refreshVMState, 12000);
+    // always-present status dashboard: refresh now and on an interval
+    renderStatusStrip();
+    refreshDashboard();
+    setInterval(refreshDashboard, 15000);
 });
 
 function wireEvents() {
@@ -57,6 +58,12 @@ function wireEvents() {
         if (s) s.status = status;
         renderNav();
         if (STEPS[CURRENT] && STEPS[CURRENT].id === id) renderStep();
+    });
+    window.runtime.EventsOn('exercise:progress', (p) => {
+        EX_PROGRESS = (p && p.current > 0) ? p : null;
+        renderStatusStrip();
+        // When the exercise finishes, refresh service dots promptly.
+        if (!EX_PROGRESS) refreshDashboard();
     });
 }
 
@@ -97,7 +104,6 @@ function renderNav() {
 function renderHeaderActions() {
     const el = document.getElementById('viewActions');
     el.innerHTML =
-        `<span class="c-vmstate" id="vmState" title="Estado de la máquina virtual">${vmBadgeHTML(LAST_VM_STATE)}</span>` +
         `<button class="c-btn" id="btnSSH">${icon('terminal')} Abrir consola SSH</button>` +
         `<button class="c-btn" id="btnTestElev">${icon('shield')} Probar elevación</button>` +
         `<button class="c-btn" id="btnReset">${icon('trash')} Reiniciar progreso</button>`;
@@ -347,30 +353,56 @@ function setResult(kind, html) {
     el.innerHTML = `<div class="c-result c-result--${kind}">${html}</div>`;
 }
 
-/* ---------- VM state indicator (live) ------------------------------------ */
-let LAST_VM_STATE = '';
+/* ---------- Status strip (always-present dashboard) ---------------------- */
 const VM_LABELS = {
     running:     { cls: 'ok',    text: 'VM encendida' },
     poweroff:    { cls: 'muted', text: 'VM apagada' },
     not_created: { cls: 'muted', text: 'VM no creada' },
     saved:       { cls: 'warn',  text: 'VM suspendida' },
     aborted:     { cls: 'danger',text: 'VM abortada' },
-    '':          { cls: 'muted', text: 'VM —' },
+    '':          { cls: 'muted', text: 'Vagrant no listo' },
 };
-function vmBadgeHTML(state) {
-    const m = VM_LABELS[state] || { cls: 'muted', text: 'VM: ' + (state || '—') };
-    const dot = m.cls === 'ok' ? 'c-dot--ok' : m.cls === 'warn' ? 'c-dot--warn' : m.cls === 'danger' ? 'c-dot--danger' : 'c-dot--muted';
-    return `<span class="c-dot ${dot}"></span>${esc(m.text)}`;
+let LAST_DASH = { vmState: '', services: {}, hasVM: false };
+let EX_PROGRESS = null; // {current,total,title} while the exercise runs
+
+function dot(cls) { return `<span class="c-dot c-dot--${cls}"></span>`; }
+
+function renderStatusStrip() {
+    const el = document.getElementById('statusStrip');
+    if (!el) return;
+    const vm = VM_LABELS[LAST_DASH.vmState] || { cls: 'muted', text: 'VM: ' + (LAST_DASH.vmState || '—') };
+    const running = LAST_DASH.vmState === 'running';
+    const svc = LAST_DASH.services || {};
+    const svcDot = (on) => running ? (on ? 'ok' : 'muted') : 'muted';
+
+    const services = `
+        <span class="c-chip" title="HDFS (NameNode + DataNode)">${dot(svcDot(svc.hdfs))} HDFS</span>
+        <span class="c-chip" title="Apache Kafka">${dot(svcDot(svc.kafka))} Kafka</span>
+        <span class="c-chip" title="Elasticsearch">${dot(svcDot(svc.elastic))} Elastic</span>
+        <span class="c-chip" title="Jupyter Lab">${dot(svcDot(svc.jupyter))} Jupyter</span>`;
+
+    let progress = '';
+    if (EX_PROGRESS && EX_PROGRESS.current > 0) {
+        const pct = Math.round((EX_PROGRESS.current / EX_PROGRESS.total) * 100);
+        progress = `<span class="c-strip__progress">
+            <span class="c-strip__progresslabel">Ejercicio ${EX_PROGRESS.current}/${EX_PROGRESS.total}: ${esc(EX_PROGRESS.title || '')}</span>
+            <span class="c-strip__bar"><span class="c-strip__fill" style="width:${pct}%"></span></span>
+        </span>`;
+    }
+
+    el.innerHTML =
+        `<span class="c-chip c-chip--vm">${dot(vm.cls)} ${esc(vm.text)}</span>` +
+        `<span class="c-strip__sep"></span>` +
+        services +
+        (progress ? `<span class="c-strip__sep"></span>` + progress : '');
 }
-async function refreshVMState() {
+
+async function refreshDashboard() {
     try {
-        const st = await window.go.main.App.VMState();
-        if (st !== LAST_VM_STATE) {
-            LAST_VM_STATE = st;
-            const el = document.getElementById('vmState');
-            if (el) el.innerHTML = vmBadgeHTML(st);
-        }
-    } catch (e) { /* vagrant not ready yet — ignore */ }
+        const d = await window.go.main.App.GetDashboard();
+        LAST_DASH = d || LAST_DASH;
+        renderStatusStrip();
+    } catch (e) { /* vagrant not ready — keep last */ }
 }
 
 async function openSSH() {
