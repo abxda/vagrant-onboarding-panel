@@ -69,16 +69,51 @@ Debian 11 amd64).
 > En Linux/macOS NO hay conflicto de hipervisor como el Hyper-V de Windows, así
 > que la VM corre a velocidad nativa (sin "tortuga").
 
-## Publicar
+## Estado v0.1.2 — qué validar (aprendido validando en Windows)
 
-Binarios a **GitHub Releases** de este repo. El binario Wails es per-plataforma
-(no universal), así que cada SO sube el suyo.
+El panel ya trae los arreglos v0.1.2 (validados en Windows). En Linux deben
+comportarse igual: el guest es el mismo Debian 11 amd64 y el código host es
+multiplataforma. Confirma:
+
+- **"Levantar todos los servicios"** arranca el stack con `setsid` DENTRO del
+  guest: los daemons (HDFS/Elasticsearch/Jupyter) **siguen vivos al cerrarse la
+  sesión SSH** (antes morían por SIGHUP — solo Kafka sobrevivía). Tras pulsarlo,
+  HDFS debe quedar **activo y persistir**. La verificación reintenta ~100 s
+  (HDFS y ES tardan en subir).
+- **"Mi laboratorio"** se desbloquea cuando la VM está EN EJECUCIÓN (detección
+  por NOMBRE con `VBoxManage`, sin depender del frágil `vagrant status`).
+- Al **cerrar el panel** apaga la VM limpiamente (overlay "Cerrando de forma
+  segura" → detiene servicios → ACPI por nombre → espera apagado).
+- **Logs claros** (versión, rutas, nombre de la VM, cada decisión de estado):
+  los alumnos están remotos, nada sin loguear.
+- **VirtualBox en Linux**: tras instalarlo puede requerir cargar el módulo de
+  kernel `vboxdrv` (Secure Boot puede bloquearlo). Valida que `vagrant up`
+  levante con el provider `virtualbox`.
+
+## Publicar (deploy a Hugging Face)
+
+El Meta-Launcher **descarga el panel desde el dataset HF `abxda/bdp-lab`** (no
+desde Releases). Por eso hay que **empaquetar el panel en un `.tar.gz`, subirlo a
+HF y añadir su entrada al `manifest.txt`**:
+
+- **Raíz del tar**: el binario `vagrant-onboarding-panel` (Linux) o el bundle
+  `vagrant-onboarding-panel.app` (macOS Intel) + `README.md`.
+- **Nombre por convención**: `bdp-vagrant-<os>-amd64.tar.gz`
+  (ej. `bdp-vagrant-linux-amd64.tar.gz`).
+- **Clave del manifest**: `<os>-amd64-vagrant` (ej. `linux-amd64-vagrant`), con
+  `.file`, `.sha256`, `.launch` (el binario/app) y `.size`.
+- **Edición SIEMPRE aditiva y POR CLAVE**: baja el manifest actual, añade/
+  actualiza SOLO tu clave, **no toques las entradas de otras plataformas**
+  (candado anti-clobber). Sube el tar PRIMERO, el manifest DESPUÉS, y verifica
+  que el sha publicado coincide con el del tar.
+- (Opcional) copia del binario en GitHub Releases.
 
 ## Token de Hugging Face
 
-Para compilar y verificar **NO** necesitas token. El token de HF solo lo usa
-el Meta-Launcher para publicar distros, y nunca va en git (te lo pasa el Dr.
-Coronado por fuera; ver el AGENTS.md de `bdp-meta-launcher`).
+Para **compilar/verificar NO** necesitas token. Para **publicar el tar a HF SÍ**
+(rol *write*). El Dr. Coronado te deja el token en un archivo dentro de tu
+carpeta de trabajo (p.ej. `.hf_token`, una sola línea, sin espacios). **Nunca**
+va en git ni en logs.
 
 ## Reportar de vuelta
 
