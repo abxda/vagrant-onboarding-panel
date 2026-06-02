@@ -506,13 +506,32 @@ func (a *App) runVagrantUp() ActionResult {
 		return ActionResult{OK: true, Message: "La VM ya estaba corriendo."}
 	}
 
-	a.sink.Emit("INFO", "Levantando la VM con 'vagrant up'. El primer arranque puede tardar varios minutos (VirtualBox correrá sobre Hyper-V, en modo compatibilidad)…")
+	a.sink.Emit("INFO", "Levantando la VM con 'vagrant up'. El primer arranque puede tardar varios minutos…")
+	res, e := c.Up(a.ctx)
 	upErr := error(nil)
-	if _, e := c.Up(a.ctx); e != nil {
+	if e != nil {
+		// No se pudo ni ejecutar el proceso (vagrant ausente, timeout, etc.).
 		upErr = e
-		a.sink.Emit("WARN", "'vagrant up' terminó con error: "+e.Error())
+		a.sink.Emit("WARN", "'vagrant up' no se pudo ejecutar: "+e.Error())
+	} else if res.ExitCode != 0 {
+		// IMPORTANTE: el runner NO convierte un exit!=0 en error de Go (ver
+		// runner.RunDir), así que hay que mirar el ExitCode a mano. Si no, un
+		// 'vagrant up' que importa la caja pero falla al ENCENDER la VM (p.ej.
+		// VirtualBox no puede tomar VT-x/AMD-V) se daría por bueno y
+		// desbloquearía 'Mi laboratorio' con la VM realmente abortada.
+		upErr = fmt.Errorf("'vagrant up' terminó con código %d", res.ExitCode)
+		a.sink.Emit("WARN", fmt.Sprintf("'vagrant up' terminó con código %d: la VM no quedó lista.", res.ExitCode))
 	} else {
 		a.sink.Emit("INFO", "'vagrant up' terminó. Confirmando la VM por nombre con VBoxManage…")
+	}
+
+	// Diagnóstico claro (alumnos remotos): si VirtualBox no pudo arrancar la VM
+	// porque otro hipervisor del host retiene la virtualización por hardware, o
+	// porque falta el módulo vboxdrv, explicarlo con la solución concreta. La
+	// pista solo aparece si su firma está en la salida, así que es inocua en el
+	// resto de plataformas.
+	if hint := hypervisorConflictHint(res.Stdout + "\n" + res.Stderr); hint != "" {
+		a.sink.Emit("ERROR", hint)
 	}
 
 	// Confirmamos por NOMBRE (fiable). Reintentos cortos por si VirtualBox tarda
@@ -526,17 +545,40 @@ func (a *App) runVagrantUp() ActionResult {
 		time.Sleep(5 * time.Second)
 	}
 
-	// VBoxManage no la ve tras los reintentos.
+	// VBoxManage no la ve corriendo tras los reintentos.
 	if upErr != nil {
+		// Falló de verdad: NO desbloqueamos el laboratorio con una VM caída.
 		a.failStep(id)
-		a.sink.Emit("ERROR", "La VM no arrancó. Revisa arriba el detalle de 'vagrant up'. Puedes reintentar con 'Levantar VM' o pedir apoyo enviando este registro.")
+		a.sink.Emit("ERROR", "La VM no arrancó (no aparece en ejecución por nombre). Revisa arriba el detalle de 'vagrant up'. Puedes reintentar con 'Levantar VM' o pedir apoyo enviando este registro.")
 		return ActionResult{Message: "Falló el arranque de la VM.", Detail: upErr.Error()}
 	}
-	// 'vagrant up' dijo OK pero no la confirmamos por nombre: lo damos por bueno
-	// con aviso (no bloqueamos el laboratorio por una verificación dudosa).
+	// 'vagrant up' terminó con éxito (exit 0) pero no la confirmamos por nombre:
+	// puede ser detección lenta/flaky de VBoxManage bajo Hyper-V en Windows. Lo
+	// damos por bueno con aviso (no bloqueamos por una verificación dudosa).
 	a.okStep(id)
 	a.sink.Emit("WARN", "'vagrant up' terminó bien pero no pude confirmar la VM por nombre. Habilito 'Mi laboratorio' igualmente; si algo falla, usa 'Verificar estado'.")
 	return ActionResult{OK: true, Message: "VM levantada (sin confirmación por nombre)."}
+}
+
+// hypervisorConflictHint inspecciona la salida de 'vagrant up'/VirtualBox y, si
+// reconoce un fallo típico de arranque (otro hipervisor reteniendo la
+// virtualización por hardware, o el módulo del kernel sin cargar), devuelve un
+// mensaje accionable para el alumno. Devuelve "" si no reconoce nada.
+func hypervisorConflictHint(out string) string {
+	low := strings.ToLower(out)
+	switch {
+	case strings.Contains(low, "verr_svm_in_use"),
+		strings.Contains(low, "can't enable the amd-v") || strings.Contains(low, "amd-v extension"):
+		return "VirtualBox no pudo tomar AMD-V: otro hipervisor lo retiene (en Linux, el módulo KVM 'kvm_amd'). Cierra cualquier VM de KVM/QEMU y descarga el módulo con 'sudo modprobe -r kvm_amd kvm', luego reintenta 'Levantar VM'. (Equivale al conflicto con Hyper-V en Windows.)"
+	case strings.Contains(low, "verr_vmx_in_use"),
+		strings.Contains(low, "can't enable the vt-x") || strings.Contains(low, "vt-x extension"):
+		return "VirtualBox no pudo tomar VT-x: otro hipervisor lo retiene (en Linux, el módulo KVM 'kvm_intel'). Cierra cualquier VM de KVM/QEMU y descarga el módulo con 'sudo modprobe -r kvm_intel kvm', luego reintenta 'Levantar VM'."
+	case strings.Contains(low, "vboxdrv"),
+		strings.Contains(low, "kernel driver not installed"),
+		strings.Contains(low, "kernel module is not loaded"):
+		return "El módulo del kernel de VirtualBox (vboxdrv) no está cargado. Suele pasar con Secure Boot activo. Carga el módulo con 'sudo /sbin/vboxconfig' (o 'sudo modprobe vboxdrv'); si Secure Boot lo bloquea, hay que firmar el módulo o desactivar Secure Boot. Luego reintenta 'Levantar VM'."
+	}
+	return ""
 }
 
 // runServicesAndExercise uploads the exercise into the VM and runs the
