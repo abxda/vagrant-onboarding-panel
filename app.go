@@ -56,6 +56,12 @@ func (a *App) startup(ctx context.Context) {
 	})
 	a.sink.Emit("INFO", "Panel de onboarding Vagrant iniciado.")
 	a.sink.Emit("INFO", fmt.Sprintf("Plataforma: %s/%s · Elevación: %s", runtime.GOOS, runtime.GOARCH, elevate.Mechanism()))
+	// Rutas clave (útiles para dar soporte remoto si algo falla):
+	a.sink.Emit("INFO", "Versión del panel: "+appVersion)
+	a.sink.Emit("INFO", "Carpeta del programa (.exe): "+executableDir())
+	a.sink.Emit("INFO", "Archivo de estado: "+stateFilePath())
+	a.sink.Emit("INFO", "Carpeta del laboratorio Vagrant: "+vagrant.DefaultWorkDir())
+	a.sink.Emit("INFO", "Nombre de la VM en VirtualBox: "+vagrant.VMName)
 }
 
 func (a *App) domReady(ctx context.Context) {}
@@ -94,17 +100,27 @@ func (a *App) runGracefulShutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	// 1) Detener servicios limpio (el panel conoce el directorio).
-	if c, err := a.vagrantClient(); err == nil {
-		if st, _ := c.State(ctx); st == "running" {
+	// 1) Detener servicios limpio (el panel conoce el directorio). Usamos la
+	// señal por NOMBRE (VBoxManage) para no saltarnos este paso por un
+	// 'vagrant status' frágil.
+	if vagrant.VMIsRunning(ctx) {
+		if c, err := a.vagrantClient(); err == nil {
+			a.sink.Emit("INFO", "Cierre: deteniendo el stack dentro de la VM (quasar-stop.sh)…")
 			emit("services", "Deteniendo servicios (HDFS, Kafka, Elasticsearch, Jupyter)…")
 			_, _ = c.SSH(ctx, 2*time.Minute, labexercise.StopServicesCmd+" </dev/null >/tmp/quasar-stop.log 2>&1; echo ok")
 		}
+	} else {
+		a.sink.Emit("INFO", "Cierre: la VM no estaba en ejecución; nada que detener.")
 	}
 	// 2) Apagado ACPI por nombre.
+	a.sink.Emit("INFO", "Cierre: apagando la VM '"+vagrant.VMName+"' por ACPI (VBoxManage)…")
 	emit("vm", "Apagando la máquina virtual de forma segura…")
 	_ = vagrant.PowerButton(ctx)
-	vagrant.WaitPoweredOff(ctx, 90*time.Second)
+	if vagrant.WaitPoweredOff(ctx, 90*time.Second) {
+		a.sink.Emit("INFO", "Cierre: la VM quedó apagada correctamente.")
+	} else {
+		a.sink.Emit("WARN", "Cierre: la VM no confirmó el apagado en 90 s; puede seguir cerrándose en segundo plano.")
+	}
 
 	emit("done", "Listo.")
 	wruntime.EventsEmit(a.ctx, "shutdown:done", nil)
@@ -314,12 +330,10 @@ func (a *App) CheckStep(stepID string) string {
 				a.sink.Emit("WARN", "La caja "+vagrant.BoxName+" todavía no está añadida.")
 			}
 		} else {
-			vmState, _ := c.State(a.ctx)
-			if vmState == "running" {
+			if a.vmConfirmRunning("verificación del paso Levantar VM") {
 				st = string(wizard.StatusOK)
-				a.sink.Emit("INFO", "La VM está corriendo.")
 			} else {
-				a.sink.Emit("WARN", "La VM no está corriendo (estado: "+vmState+").")
+				a.sink.Emit("WARN", "La VM no está en ejecución. Pulsa 'Levantar VM (vagrant up)' para arrancarla.")
 			}
 		}
 		a.state.SetStatus(stepID, st)
@@ -455,6 +469,25 @@ func (a *App) runAddBox() ActionResult {
 	return ActionResult{Message: "La caja no aparece tras la descarga."}
 }
 
+// vmConfirmRunning es la comprobación AUTORITATIVA de "¿la VM está encendida?".
+// Pregunta a VBoxManage por el NOMBRE de la VM (no usa el lock de Vagrant ni el
+// directorio), así que NUNCA devuelve el "unknown" intermitente que sí da
+// `vagrant status` cuando se ejecuta a la vez que otro comando vagrant. Ese
+// "unknown" era la causa de que el paso "Levantar VM" se marcara como error y
+// el botón "Mi laboratorio" se quedara bloqueado. Cada llamada queda logueada
+// para poder dar soporte remoto.
+func (a *App) vmConfirmRunning(reason string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	up := vagrant.VMIsRunning(ctx)
+	estado := "apagada o no creada"
+	if up {
+		estado = "EN EJECUCIÓN"
+	}
+	a.sink.Emit("INFO", fmt.Sprintf("Comprobación de la VM '%s' por VBoxManage (%s): %s", vagrant.VMName, reason, estado))
+	return up
+}
+
 // runVagrantUp boots the VM.
 func (a *App) runVagrantUp() ActionResult {
 	id := wizard.StepUp
@@ -467,26 +500,43 @@ func (a *App) runVagrantUp() ActionResult {
 	}
 	_ = c.EnsureVagrantfile()
 
-	if st, _ := c.State(a.ctx); st == "running" {
-		a.sink.Emit("INFO", "La VM ya está corriendo.")
+	if a.vmConfirmRunning("antes de levantar") {
+		a.sink.Emit("INFO", "La VM ya estaba corriendo; no hace falta levantarla otra vez. Habilito 'Mi laboratorio'.")
 		a.okStep(id)
 		return ActionResult{OK: true, Message: "La VM ya estaba corriendo."}
 	}
 
 	a.sink.Emit("INFO", "Levantando la VM con 'vagrant up'. El primer arranque puede tardar varios minutos (VirtualBox correrá sobre Hyper-V, en modo compatibilidad)…")
-	if _, err := c.Up(a.ctx); err != nil {
+	upErr := error(nil)
+	if _, e := c.Up(a.ctx); e != nil {
+		upErr = e
+		a.sink.Emit("WARN", "'vagrant up' terminó con error: "+e.Error())
+	} else {
+		a.sink.Emit("INFO", "'vagrant up' terminó. Confirmando la VM por nombre con VBoxManage…")
+	}
+
+	// Confirmamos por NOMBRE (fiable). Reintentos cortos por si VirtualBox tarda
+	// en listar la VM bajo Hyper-V. Esto evita el falso "unknown" de vagrant status.
+	for i := 1; i <= 6; i++ {
+		if a.vmConfirmRunning(fmt.Sprintf("confirmación %d/6 tras vagrant up", i)) {
+			a.okStep(id)
+			a.sink.Emit("INFO", "✓ VM levantada y en ejecución. Ya puedes entrar a 'Mi laboratorio'.")
+			return ActionResult{OK: true, Message: "VM levantada y corriendo."}
+		}
+		time.Sleep(5 * time.Second)
+	}
+
+	// VBoxManage no la ve tras los reintentos.
+	if upErr != nil {
 		a.failStep(id)
-		a.sink.Emit("ERROR", "Error en vagrant up: "+err.Error())
-		return ActionResult{Message: "Falló el arranque de la VM.", Detail: err.Error()}
+		a.sink.Emit("ERROR", "La VM no arrancó. Revisa arriba el detalle de 'vagrant up'. Puedes reintentar con 'Levantar VM' o pedir apoyo enviando este registro.")
+		return ActionResult{Message: "Falló el arranque de la VM.", Detail: upErr.Error()}
 	}
-	st, _ := c.State(a.ctx)
-	if st == "running" {
-		a.okStep(id)
-		a.sink.Emit("INFO", "✓ VM levantada y en ejecución.")
-		return ActionResult{OK: true, Message: "VM levantada y corriendo."}
-	}
-	a.failStep(id)
-	return ActionResult{Message: "La VM no quedó en estado 'running' (estado: " + st + "). Revisa el registro."}
+	// 'vagrant up' dijo OK pero no la confirmamos por nombre: lo damos por bueno
+	// con aviso (no bloqueamos el laboratorio por una verificación dudosa).
+	a.okStep(id)
+	a.sink.Emit("WARN", "'vagrant up' terminó bien pero no pude confirmar la VM por nombre. Habilito 'Mi laboratorio' igualmente; si algo falla, usa 'Verificar estado'.")
+	return ActionResult{OK: true, Message: "VM levantada (sin confirmación por nombre)."}
 }
 
 // runServicesAndExercise uploads the exercise into the VM and runs the
@@ -501,9 +551,9 @@ func (a *App) runServicesAndExercise() ActionResult {
 		return ActionResult{Message: err.Error()}
 	}
 
-	if st, _ := c.State(a.ctx); st != "running" {
+	if !a.vmConfirmRunning("antes de arrancar los servicios") {
 		a.failStep(id)
-		msg := "La VM no está corriendo (estado: " + st + "). Ejecuta el paso 5 primero."
+		msg := "La VM no está corriendo. Ejecuta primero el paso 'Levantar VM'."
 		a.sink.Emit("ERROR", msg)
 		return ActionResult{Message: msg}
 	}
@@ -773,26 +823,38 @@ func (a *App) StartAllServices() ActionResult {
 	if err != nil {
 		return ActionResult{OK: false, Message: err.Error()}
 	}
-	if st, _ := c.State(a.ctx); st != "running" {
-		return ActionResult{OK: false, Message: "La VM no está encendida. Levántala en el paso 5 primero."}
+	if !a.vmConfirmRunning("antes de levantar los servicios") {
+		return ActionResult{OK: false, Message: "La VM no está encendida. Levántala en el paso 'Levantar VM' primero."}
 	}
 	a.sink.Emit("INFO", strings.Repeat("─", 56))
 	a.sink.Emit("INFO", "Levantando todos los servicios en la VM (HDFS, Kafka, Elasticsearch, Jupyter)…")
+	a.sink.Emit("INFO", "Los daemons arrancan en una sesión propia (setsid): siguen vivos aunque se cierre la conexión SSH.")
 	if res, err := c.SSH(a.ctx, 5*time.Minute, labexercise.StartServicesCmd); err != nil || res.ExitCode != 0 {
 		a.sink.Emit("ERROR", "Falló el arranque de los servicios.")
 		return ActionResult{OK: false, Message: "No pude iniciar los servicios. Revisa el registro."}
 	}
-	a.sink.Emit("INFO", "Comando de arranque enviado. Verificando estado en unos segundos…")
-	// Give daemons a moment, then report what's up.
-	time.Sleep(6 * time.Second)
-	svc, _ := c.Services(a.ctx)
-	a.emitServices(svc)
-	a.sink.Emit("INFO", fmt.Sprintf("Estado: HDFS=%s Kafka=%s Elasticsearch=%s Jupyter=%s",
-		onoff(svc.HDFS), onoff(svc.Kafka), onoff(svc.Elastic), onoff(svc.Jupyter)))
-	if svc.HDFS && svc.Kafka && svc.Elastic {
-		return ActionResult{OK: true, Message: "Servicios levantados."}
+	// HDFS (NameNode+DataNode) y Elasticsearch tardan en subir; verificamos con
+	// REINTENTOS (~100 s) en vez de un único chequeo prematuro, que reportaba
+	// 'HDFS=apagado' por error a los pocos segundos.
+	a.sink.Emit("INFO", "Arranque lanzado. HDFS y Elasticsearch tardan unos segundos; verifico (hasta ~100 s)…")
+	var svc vagrant.Services
+	for i := 1; i <= 12; i++ {
+		time.Sleep(8 * time.Second)
+		svc, _ = c.Services(a.ctx)
+		a.emitServices(svc)
+		a.sink.Emit("INFO", fmt.Sprintf("Verificación %d/12 → HDFS=%s Kafka=%s Elasticsearch=%s Jupyter=%s",
+			i, onoff(svc.HDFS), onoff(svc.Kafka), onoff(svc.Elastic), onoff(svc.Jupyter)))
+		if svc.HDFS && svc.Kafka && svc.Elastic && svc.Jupyter {
+			a.sink.Emit("INFO", "✓ Todos los servicios están arriba.")
+			return ActionResult{OK: true, Message: "Servicios levantados."}
+		}
 	}
-	return ActionResult{OK: true, Message: "Arranque enviado. Algún servicio puede tardar unos segundos más; pulsa Actualizar."}
+	if svc.HDFS {
+		a.sink.Emit("INFO", "HDFS ya responde. Si algún otro servicio falta, pulsa 'Actualizar' en unos segundos.")
+		return ActionResult{OK: true, Message: "HDFS arriba; algún servicio puede tardar un poco más."}
+	}
+	a.sink.Emit("WARN", "HDFS aún no responde. Abre la Consola SSH y mira /tmp/quasar-start.log dentro de la VM, o reintenta; si persiste, envíame este registro.")
+	return ActionResult{OK: true, Message: "Arranque enviado, pero HDFS aún no responde. Revisa el registro o reintenta."}
 }
 
 // StopAllServices stops the whole stack inside the VM via quasar-stop.sh.
@@ -1003,9 +1065,29 @@ func (a *App) GetDashboard() Dashboard {
 	if err != nil {
 		return Dashboard{VMState: ""}
 	}
-	st, _ := c.State(a.ctx)
+	// Fuente de verdad para "¿la VM está encendida?": VBoxManage por NOMBRE
+	// (sin lock de Vagrant), para no devolver el "unknown" intermitente que
+	// bloqueaba el laboratorio. Si no está corriendo, afinamos el estado
+	// (poweroff / not_created / saved) con vagrant status, solo informativo.
+	vmctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	var st string
+	if vagrant.VMIsRunning(vmctx) {
+		st = "running"
+	} else {
+		st, _ = c.State(a.ctx)
+	}
 	d := Dashboard{VMState: st, HasVM: st != "" && st != "not_created"}
 	if st == "running" {
+		// AUTO-SANADO: si la VM está corriendo pero el paso "Levantar VM" no
+		// quedó en 'ok' (p.ej. un 'vagrant status' falló antes y lo marcó como
+		// error), lo corregimos aquí. Así el botón "Mi laboratorio" se
+		// desbloquea solo en el siguiente refresco, sin que el alumno haga nada.
+		if a.state.Status(string(wizard.StepUp)) != string(wizard.StatusOK) {
+			a.state.SetStatus(string(wizard.StepUp), string(wizard.StatusOK))
+			a.emitStepStatus(string(wizard.StepUp), string(wizard.StatusOK))
+			a.sink.Emit("INFO", "VM detectada EN EJECUCIÓN (VBoxManage): marco 'Levantar VM' como completado y habilito 'Mi laboratorio'.")
+		}
 		if svc, err := c.Services(a.ctx); err == nil {
 			d.Services = svc
 		}

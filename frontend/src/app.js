@@ -152,13 +152,20 @@ function renderNav() {
     };
 
     const labActive = MODE === 'lab' ? ' is-active' : '';
-    const labLocked = !prepDone;
+    // El laboratorio se habilita si la preparación está completa O si la VM ya
+    // está corriendo: si la VM está arriba es que VirtualBox + Vagrant + caja +
+    // 'vagrant up' funcionaron, aunque algún paso se haya quedado sin marcar.
+    // Esto evita que el botón "Mi laboratorio" quede bloqueado por un estado de
+    // paso incompleto (la causa que reportó el alumno).
+    const vmRunning = LAST_DASH.vmState === 'running';
+    const labReady = prepDone || vmRunning;
+    const labLocked = !labReady;
     nav.innerHTML =
         `<div class="c-navgroup">Preparación</div>` +
         prep.map(stepBtn).join('') +
         `<div class="c-navgroup">Mi laboratorio</div>` +
         `<button class="c-step-nav c-step-nav--lab${labActive}" id="navLab" ${labLocked ? 'disabled title="Completa la preparación primero"' : ''}>
-            <span class="c-step-nav__num ${prepDone ? 'c-step-nav__num--ok' : ''}">${icon('server')}</span>
+            <span class="c-step-nav__num ${labReady ? 'c-step-nav__num--ok' : ''}">${icon('server')}</span>
             <span class="c-step-nav__body">
                 <span class="c-step-nav__title">Mi laboratorio</span>
                 <span class="c-step-nav__sub">${labLocked ? 'Completa la preparación' : 'Servicios · Ejercicios · HDFS'}</span>
@@ -528,16 +535,20 @@ async function refreshDashboard() {
     try {
         const d = await window.go.main.App.GetDashboard();
         if (!d) return;
+        const prevVm = LAST_DASH.vmState;
         // No degradar el estado: si una consulta tarda y vuelve con vmState
-        // vacío (vagrant ocupado), conservamos el último estado conocido en
-        // vez de mostrar "Vagrant no listo" — eso parecía que la VM había
-        // muerto al detener servicios, cuando seguía encendida.
-        if (!d.vmState && LAST_DASH.vmState) {
+        // vacío o 'unknown' (vagrant ocupado), conservamos el último estado
+        // conocido en vez de mostrar "Vagrant no listo" — eso parecía que la VM
+        // había muerto al detener servicios, cuando seguía encendida.
+        if ((!d.vmState || d.vmState === 'unknown') && LAST_DASH.vmState) {
             LAST_DASH = { ...LAST_DASH, services: d.services || LAST_DASH.services };
         } else {
             LAST_DASH = d;
         }
         renderStatusStrip();
+        // Si cambió el estado de la VM, refrescamos el nav: así "Mi laboratorio"
+        // se desbloquea solo en cuanto la VM está corriendo.
+        if (LAST_DASH.vmState !== prevVm) renderNav();
     } catch (e) { /* vagrant not ready — keep last */ }
 }
 
@@ -616,7 +627,7 @@ function renderLabServicios() {
             </div>
             <div class="c-svcpanel__hint">${
                 !vmRunning ? `${icon('alert')} La máquina virtual no está encendida. Vuelve a Preparación y completa "Levantar VM".`
-                : allUp ? `${icon('check')} Todos los servicios están <b>activos</b>. Se mantienen corriendo aunque cierres el panel.`
+                : allUp ? `${icon('check')} Todos los servicios están <b>activos</b>. Déjalo abierto durante la clase: al cerrar el panel se apagará la VM de forma segura.`
                 : someUp ? `${icon('info')} Algunos servicios están apagados (en gris). Pulsa <b>"Levantar todos los servicios"</b> — enciende los que faltan sin reiniciar los que ya corren.`
                 : `${icon('info')} Los servicios están apagados. Pulsa <b>"Levantar todos los servicios"</b> para encenderlos.`
             }</div>

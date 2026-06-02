@@ -73,11 +73,17 @@ type Step struct {
 //     9092), freeing the controller port. Healthy Kafka is left alone.
 //  2. Run quasar-start.sh (idempotent for the other services).
 //
-// CRITICAL: stdio is redirected to a file inside the VM (</dev/null >log 2>&1).
-// Without this the SSH channel never closes — Elasticsearch (-d) and Jupyter
-// (&) inherit the channel's stdout and `vagrant ssh -c` hangs until timeout.
-// Redirecting detaches them; the command returns immediately, daemons keep
-// running in the background, and the noisy boot logs stay out of the panel.
+// CRITICAL (dos motivos):
+//  1. stdio redirigido a un archivo (</dev/null >log 2>&1): si no, el canal SSH
+//     nunca cierra — Elasticsearch (-d) y Jupyter (&) heredan el stdout del canal
+//     y `vagrant ssh -c` se cuelga hasta el timeout.
+//  2. setsid: arranca quasar-start.sh en una SESIÓN NUEVA, desacoplada de la
+//     sesión SSH. SIN ESTO, al cerrarse la sesión los daemons reciben SIGHUP y
+//     mueren ~1s después (se observó: NameNode/DataNode/Elasticsearch caían
+//     justo al volver el comando; solo Kafka sobrevivía). Con setsid el stack
+//     queda en su propio grupo de sesión y sigue vivo.
+// Borramos el log previo (puede ser de root de un arranque anterior) para que el
+// redirect no falle por permisos.
 const StartServicesCmd = `bash -lc '
 # Si Kafka tiene el controller (9093) pero NO el broker (9092), es un zombie:
 # lo matamos para liberar el puerto y que arranque limpio.
@@ -86,8 +92,9 @@ if ss -tln 2>/dev/null | grep -q ":9093 " && ! ss -tln 2>/dev/null | grep -q ":9
   sudo pkill -9 -f kafka 2>/dev/null || true
   sleep 3
 fi
-sudo /usr/local/bin/quasar-start.sh </dev/null >/tmp/quasar-start.log 2>&1
-echo "Stack de servicios lanzado (detalle en /tmp/quasar-start.log dentro de la VM)."
+sudo rm -f /tmp/quasar-start.log
+sudo setsid bash -lc "/usr/local/bin/quasar-start.sh > /tmp/quasar-start.log 2>&1" </dev/null
+echo "Stack de servicios lanzado en segundo plano (setsid); detalle en /tmp/quasar-start.log dentro de la VM."
 ' </dev/null >/tmp/quasar-wrap.log 2>&1; cat /tmp/quasar-wrap.log`
 
 // WaitHDFSCmd polls until the HDFS NameNode RPC answers (or ~90s elapse), so we
