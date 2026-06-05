@@ -11,7 +11,7 @@ import (
 //go:embed all:frontend/src
 var assets embed.FS
 
-const appVersion = "0.1.2"
+const appVersion = "0.1.3"
 
 func main() {
 	app := NewApp()

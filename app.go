@@ -489,6 +489,38 @@ func (a *App) vmConfirmRunning(reason string) bool {
 	return up
 }
 
+// vboxdrvHelp es la guía que mostramos cuando el módulo de kernel de VirtualBox
+// no se puede cargar (lo más común: Secure Boot bloquea el módulo sin firmar).
+const vboxdrvHelp = "No pude cargar el módulo del kernel de VirtualBox (vboxdrv). " +
+	"Suele deberse a Secure Boot, que bloquea el módulo sin firmar. Soluciones: " +
+	"(1) en una terminal ejecuta  sudo /sbin/vboxconfig  y, si Secure Boot está activo, firma el " +
+	"módulo (mokutil) o desactívalo en la BIOS/UEFI; luego reintenta «Levantar VM». " +
+	"(2) Alternativa SIN máquina virtual: usa la edición Container (Podman) o Portable."
+
+// ensureVboxModule se asegura (en Linux) de que el módulo vboxdrv esté cargado.
+// Si no lo está, intenta cargarlo con pkexec: primero 'modprobe vboxdrv' (rápido
+// si el módulo ya está compilado) y, si falla, '/sbin/vboxconfig' (lo reconstruye).
+// Devuelve true si el módulo quedó cargado (o si no aplica: Windows/macOS).
+func (a *App) ensureVboxModule() bool {
+	if vboxdrvLoaded() {
+		return true
+	}
+	a.sink.Emit("WARN", "El módulo del kernel de VirtualBox (vboxdrv) no está cargado (suele pasar con Secure Boot). Intento cargarlo (puede pedir tu contraseña)…")
+	for _, req := range []elevate.Request{
+		{Command: "modprobe", Args: []string{"vboxdrv"}, Reason: "Cargar el módulo del kernel de VirtualBox (vboxdrv)."},
+		{Command: "/sbin/vboxconfig", Reason: "Reconstruir y cargar el módulo del kernel de VirtualBox (vboxdrv)."},
+	} {
+		a.sink.Emit("INFO", "$ "+strings.TrimSpace(req.Command+" "+strings.Join(req.Args, " ")))
+		_, _ = elevate.Run(a.ctx, req)
+		if vboxdrvLoaded() {
+			a.sink.Emit("INFO", "✓ Módulo vboxdrv cargado.")
+			return true
+		}
+	}
+	a.sink.Emit("ERROR", vboxdrvHelp)
+	return false
+}
+
 // runVagrantUp boots the VM.
 func (a *App) runVagrantUp() ActionResult {
 	id := wizard.StepUp
@@ -507,10 +539,21 @@ func (a *App) runVagrantUp() ActionResult {
 		return ActionResult{OK: true, Message: "La VM ya estaba corriendo."}
 	}
 
+	// En Linux, 'vagrant up' con VirtualBox falla si el módulo de kernel vboxdrv
+	// no está cargado (típico con Secure Boot). Lo detectamos y tratamos de cargarlo
+	// con pkexec ANTES de arrancar, para no fallar tras la espera. No-op en Win/macOS.
+	if !a.ensureVboxModule() {
+		a.failStep(id)
+		return ActionResult{Message: "El módulo del kernel de VirtualBox (vboxdrv) no está cargado; revisa el registro."}
+	}
+
 	a.sink.Emit("INFO", "Levantando la VM con 'vagrant up'. El primer arranque puede tardar varios minutos (VirtualBox correrá sobre Hyper-V, en modo compatibilidad)…")
 	upErr := error(nil)
-	if _, e := c.Up(a.ctx); e != nil {
+	if upRes, e := c.Up(a.ctx); e != nil {
 		upErr = e
+		if blob := strings.ToLower(upRes.Stdout + upRes.Stderr); strings.Contains(blob, "kernel module") || strings.Contains(blob, "vboxdrv") {
+			a.sink.Emit("ERROR", vboxdrvHelp)
+		}
 		a.sink.Emit("WARN", "'vagrant up' terminó con error: "+e.Error())
 	} else {
 		a.sink.Emit("INFO", "'vagrant up' terminó. Confirmando la VM por nombre con VBoxManage…")
