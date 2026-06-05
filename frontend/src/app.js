@@ -188,10 +188,12 @@ function renderHeaderActions() {
     el.innerHTML =
         `<button class="c-btn" id="btnJupyter" ${vmRunning ? '' : 'disabled'} title="Abre Jupyter Lab en el navegador">${icon('book')} Abrir Jupyter</button>` +
         `<button class="c-btn" id="btnFolder" title="Abre la carpeta de trabajo (lo que pongas ahí lo verás en Jupyter)">${icon('folder')} Carpeta de trabajo</button>` +
+        `<button class="c-btn" id="btnSmoke" title="Descarga el cuaderno de prueba (TestGlobalBigData) a tu carpeta de trabajo; aparecerá en Jupyter">${icon('book')} Cuaderno de prueba</button>` +
         `<button class="c-btn" id="btnSSH">${icon('terminal')} Consola SSH</button>` +
         `<button class="c-btn" id="btnReset">${icon('trash')} Reiniciar</button>`;
     document.getElementById('btnJupyter').addEventListener('click', openJupyter);
     document.getElementById('btnFolder').addEventListener('click', openFolder);
+    document.getElementById('btnSmoke').addEventListener('click', downloadSmoke);
     document.getElementById('btnSSH').addEventListener('click', openSSH);
     document.getElementById('btnReset').addEventListener('click', async () => {
         if (!confirm('¿Reiniciar el progreso del asistente? No se desinstala nada; solo se olvidan los pasos marcados como completos.')) return;
@@ -577,6 +579,21 @@ async function openJupyter() {
 async function openFolder() {
     const res = await window.go.main.App.OpenWorkFolder();
     if (!res.ok) alert(res.message || 'No se pudo abrir la carpeta.');
+}
+
+async function downloadSmoke() {
+    const btn = document.getElementById('btnSmoke');
+    if (btn) { btn.disabled = true; btn.innerHTML = `${icon('book')} Descargando…`; }
+    try {
+        const res = await window.go.main.App.DownloadSmokeTest();
+        if (res.ok) {
+            alert('Cuaderno de prueba descargado a tu carpeta de trabajo.\nÁbrelo en Jupyter (aparece en la carpeta montada) y ejecútalo de arriba a abajo.');
+        } else {
+            alert(res.message || 'No se pudo descargar el cuaderno de prueba.');
+        }
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = `${icon('book')} Cuaderno de prueba`; }
+    }
 }
 
 // stepActionLabel ajusta el texto del botón principal. En el Paso 6, si los

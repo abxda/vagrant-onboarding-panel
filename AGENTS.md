@@ -92,6 +92,11 @@ multiplataforma. Confirma:
 
 ## Publicar (deploy a Hugging Face)
 
+> Runbook completo (comandos, verificación de `oid`, ritual anti-clobber, costo de
+> cada cambio): **`Curso_BDP/PUBLICAR_Y_ACTUALIZAR.md` §4** (panel chico ~5 MB).
+> Este panel **no** tiene auto-update: el meta-launcher baja el tarball y verifica
+> el SHA del manifiesto, así que aquí **sí** se edita `manifest.txt`.
+
 El Meta-Launcher **descarga el panel desde el dataset HF `abxda/bdp-lab`** (no
 desde Releases). Por eso hay que **empaquetar el panel en un `.tar.gz`, subirlo a
 HF y añadir su entrada al `manifest.txt`**:

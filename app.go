@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -986,6 +987,51 @@ func (a *App) OpenExerciseFolder() ActionResult {
 	}
 	a.sink.Emit("INFO", "Carpeta del ejercicio abierta: "+exDir)
 	return ActionResult{OK: true, Message: "Carpeta del ejercicio abierta."}
+}
+
+// smokeURL es el cuaderno de prueba (TestGlobalBigData). La caja de Vagrant corre
+// Spark 4.0 / Scala 2.13 (igual que el Container), así que usamos la variante
+// container/ — homologada con el launcher de Podman.
+const smokeURL = "https://huggingface.co/datasets/abxda/bdp-lab/resolve/main/cuadernos/semana_2/container/TestGlobalBigData.ipynb"
+
+// DownloadSmokeTest baja el cuaderno de prueba a la carpeta de trabajo del host.
+// Esa carpeta se monta en la VM como /vagrant y la ve Jupyter, así que el alumno
+// lo encontrará dentro de Jupyter Lab y podrá ejecutarlo de arriba a abajo.
+func (a *App) DownloadSmokeTest() ActionResult {
+	c, err := a.vagrantClient()
+	if err != nil {
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	dest := filepath.Join(c.WorkDir, "TestGlobalBigData.ipynb")
+	a.sink.Emit("INFO", "Descargando el cuaderno de prueba (TestGlobalBigData)…")
+	if err := downloadFile(smokeURL, dest); err != nil {
+		a.sink.Emit("ERROR", "No pude descargar el cuaderno: "+err.Error())
+		return ActionResult{OK: false, Message: err.Error()}
+	}
+	a.sink.Emit("INFO", "✓ Cuaderno guardado en la carpeta de trabajo (se monta como /vagrant). Ábrelo en Jupyter y ejecútalo de arriba a abajo.")
+	return ActionResult{OK: true, Message: dest}
+}
+
+// downloadFile descarga url a dest, creando la carpeta destino si hace falta.
+func downloadFile(url, dest string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d al descargar %s", resp.StatusCode, url)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	return err
 }
 
 // OpenJupyter opens Jupyter Lab in the default browser. The box's
